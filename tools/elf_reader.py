@@ -83,7 +83,7 @@ def inspect(path):
 
     print("entry code")
     for address, word in code:
-        print(f"0x{address:08x} 0x{word:08x} {decode(word)}")
+        print(f"0x{address:08x} 0x{word:08x} {decode(address, word)}")
 
 
 def main():
