@@ -2,6 +2,8 @@ import struct
 import sys
 from pathlib import Path
 
+from allegrex import decode
+
 
 def read_header(data):
     if len(data) < 52 or data[:4] != b"\x7fELF":
@@ -81,7 +83,7 @@ def inspect(path):
 
     print("entry code")
     for address, word in code:
-        print(f"0x{address:08x} 0x{word:08x}")
+        print(f"0x{address:08x} 0x{word:08x} {decode(word)}")
 
 
 def main():
