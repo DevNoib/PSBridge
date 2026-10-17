@@ -2,9 +2,10 @@ import struct
 import sys
 from pathlib import Path
 
+
 def read_header(data):
     if len(data) < 52 or data[:4] != b"\x7fELF":
-        raise ValueError("bad girl")
+        raise ValueError("bad boy")
     if data[4] != 1 or data[5] != 1:
         raise ValueError("elf must be 32-bit little-endian")
 
