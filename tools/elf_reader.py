@@ -43,35 +43,64 @@ def read_segments(data, ph_offset, ph_size, ph_count):
     return segments
 
 
-def read_code(data, segments, entry, limit=256):
+def read_word(data, segments, address):
     for file_off, vaddr, file_size, _, flags, _ in segments:
         if not flags & 1:
             continue
-        if not vaddr <= entry < vaddr + file_size:
+        if not vaddr <= address <= vaddr + file_size - 4:
             continue
 
-        code_off = file_off + entry - vaddr
-        available = min(limit, (file_off + file_size - code_off) // 4)
-        code = []
+        offset = file_off + address - vaddr
+        return struct.unpack_from("<I", data, offset)[0]
 
-        for index in range(available):
-            address = entry + index * 4
-            word = struct.unpack_from("<I", data, code_off + index * 4)[0]
-            code.append((address, word))
+    raise ValueError(f"code not found at 0x{address:08x}")
 
-            if len(code) > 1 and code[-2][1] == 0x03e00008:
-                return code
 
-        raise ValueError("entry return not found")
+def read_function(data, segments, entry, limit=4096):
+    code = {}
+    pending = [entry]
 
-    raise ValueError("entry code not found")
+    while pending:
+        address = pending.pop()
+
+        while address not in code:
+            if len(code) >= limit:
+                raise ValueError("function is too large")
+
+            word = read_word(data, segments, address)
+            code[address] = word
+            op = word >> 26
+            funct = word & 63
+
+            if op not in (2, 3, 4, 5) and not (op == 0 and funct in (8, 9)):
+                address += 4
+                continue
+
+            delay = address + 4
+            if delay not in code:
+                code[delay] = read_word(data, segments, delay)
+
+            if op in (4, 5):
+                value = word & 0xffff
+                offset = value - 0x10000 if value & 0x8000 else value
+                pending.append(address + 8)
+                pending.append((address + 4 + offset * 4) & 0xffffffff)
+            elif op == 2:
+                target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
+                pending.append(target)
+            elif op == 3 or funct == 9:
+                pending.append(address + 8)
+
+            break
+
+    return sorted(code.items())
 
 
 def inspect(path):
     data = path.read_bytes()
     elf_type, entry, offset, size, count = read_header(data)
     segments = read_segments(data, offset, size, count)
-    code = read_code(data, segments, entry)
+    code = read_function(data, segments, entry)
 
     print(f"file {path}")
     print(f"type {'psp prx' if elf_type == 0xFFA0 else hex(elf_type)}")
