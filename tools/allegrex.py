@@ -35,6 +35,10 @@ def decode(address, word):
         return f"jalr {reg(rd)}, {reg(rs)}"
     if op == 0 and funct == 0x21:
         return f"addu {reg(rd)}, {reg(rs)}, {reg(rt)}"
+    if op == 0 and funct == 0x25:
+        return f"or {reg(rd)}, {reg(rs)}, {reg(rt)}"
+    if op == 0 and funct == 0x26:
+        return f"xor {reg(rd)}, {reg(rs)}, {reg(rt)}"
     if op == 2 or op == 3:
         target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
         name = "j" if op == 2 else "jal"

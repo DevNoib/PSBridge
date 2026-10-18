@@ -43,7 +43,7 @@ def read_segments(data, ph_offset, ph_size, ph_count):
     return segments
 
 
-def read_code(data, segments, entry, count=8):
+def read_code(data, segments, entry, limit=256):
     for file_off, vaddr, file_size, _, flags, _ in segments:
         if not flags & 1:
             continue
@@ -51,12 +51,18 @@ def read_code(data, segments, entry, count=8):
             continue
 
         code_off = file_off + entry - vaddr
-        available = min(count, (file_off + file_size - code_off) // 4)
+        available = min(limit, (file_off + file_size - code_off) // 4)
+        code = []
 
-        return [
-            (entry + index * 4, struct.unpack_from("<I", data, code_off + index * 4)[0])
-            for index in range(available)
-        ]
+        for index in range(available):
+            address = entry + index * 4
+            word = struct.unpack_from("<I", data, code_off + index * 4)[0]
+            code.append((address, word))
+
+            if len(code) > 1 and code[-2][1] == 0x03e00008:
+                return code
+
+        raise ValueError("entry return not found")
 
     raise ValueError("entry code not found")
 
