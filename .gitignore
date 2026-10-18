@@ -4,3 +4,4 @@ __pycache__/
 *.elf
 *.prx
 *.iso
+build/

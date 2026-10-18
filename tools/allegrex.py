@@ -24,46 +24,77 @@ def decode(address, word):
     value = word & 0xffff
 
     if word == 0:
-        return "nop"
+        return "nop",
     if op == 0 and funct == 0:
-        return f"sll {reg(rd)}, {reg(rt)}, {shift}"
+        return "sll", rd, rt, shift
     if op == 0 and funct == 2:
-        return f"srl {reg(rd)}, {reg(rt)}, {shift}"
+        return "srl", rd, rt, shift
     if op == 0 and funct == 8:
-        return f"jr {reg(rs)}"
+        return "jr", rs
     if op == 0 and funct == 9:
-        return f"jalr {reg(rd)}, {reg(rs)}"
+        return "jalr", rd, rs
     if op == 0 and funct == 0x21:
-        return f"addu {reg(rd)}, {reg(rs)}, {reg(rt)}"
+        return "addu", rd, rs, rt
     if op == 0 and funct == 0x25:
-        return f"or {reg(rd)}, {reg(rs)}, {reg(rt)}"
+        return "or", rd, rs, rt
     if op == 0 and funct == 0x26:
-        return f"xor {reg(rd)}, {reg(rs)}, {reg(rt)}"
-    if op == 2 or op == 3:
+        return "xor", rd, rs, rt
+    if op in (2, 3):
         target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
-        name = "j" if op == 2 else "jal"
-        return f"{name} 0x{target:08x}"
-    if op == 4 or op == 5:
+        return ("j" if op == 2 else "jal"), target
+    if op in (4, 5):
         target = (address + 4 + (signed(value) << 2)) & 0xffffffff
-        name = "beq" if op == 4 else "bne"
-        return f"{name} {reg(rs)}, {reg(rt)}, 0x{target:08x}"
+        return ("beq" if op == 4 else "bne"), rs, rt, target
     if op == 9:
-        return f"addiu {reg(rt)}, {reg(rs)}, {signed(value)}"
+        return "addiu", rt, rs, signed(value)
     if op == 12:
-        return f"andi {reg(rt)}, {reg(rs)}, 0x{value:x}"
+        return "andi", rt, rs, value
     if op == 13:
-        return f"ori {reg(rt)}, {reg(rs)}, 0x{value:x}"
+        return "ori", rt, rs, value
     if op == 14:
-        return f"xori {reg(rt)}, {reg(rs)}, 0x{value:x}"
+        return "xori", rt, rs, value
     if op == 15:
-        return f"lui {reg(rt)}, 0x{value:x}"
+        return "lui", rt, value
     if op == 35:
-        return f"lw {reg(rt)}, {signed(value)}({reg(rs)})"
+        return "lw", rt, rs, signed(value)
     if op == 40:
-        return f"sb {reg(rt)}, {signed(value)}({reg(rs)})"
+        return "sb", rt, rs, signed(value)
     if op == 41:
-        return f"sh {reg(rt)}, {signed(value)}({reg(rs)})"
+        return "sh", rt, rs, signed(value)
     if op == 43:
-        return f"sw {reg(rt)}, {signed(value)}({reg(rs)})"
+        return "sw", rt, rs, signed(value)
 
-    return f".word 0x{word:08x}"
+    return "word", word
+
+
+def format_instruction(instruction):
+    name = instruction[0]
+
+    if name == "nop":
+        return name
+    if name in ("sll", "srl"):
+        _, rd, rt, shift = instruction
+        return f"{name} {reg(rd)}, {reg(rt)}, {shift}"
+    if name == "jr":
+        return f"jr {reg(instruction[1])}"
+    if name == "jalr":
+        return f"jalr {reg(instruction[1])}, {reg(instruction[2])}"
+    if name in ("addu", "or", "xor"):
+        _, rd, rs, rt = instruction
+        return f"{name} {reg(rd)}, {reg(rs)}, {reg(rt)}"
+    if name in ("j", "jal"):
+        return f"{name} 0x{instruction[1]:08x}"
+    if name in ("beq", "bne"):
+        _, rs, rt, target = instruction
+        return f"{name} {reg(rs)}, {reg(rt)}, 0x{target:08x}"
+    if name in ("addiu", "andi", "ori", "xori"):
+        _, rt, rs, value = instruction
+        value = str(value) if name == "addiu" else f"0x{value:x}"
+        return f"{name} {reg(rt)}, {reg(rs)}, {value}"
+    if name == "lui":
+        return f"lui {reg(instruction[1])}, 0x{instruction[2]:x}"
+    if name in ("lw", "sb", "sh", "sw"):
+        _, rt, rs, offset = instruction
+        return f"{name} {reg(rt)}, {offset}({reg(rs)})"
+
+    return f".word 0x{instruction[1]:08x}"

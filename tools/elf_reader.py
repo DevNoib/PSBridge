@@ -2,7 +2,7 @@ import struct
 import sys
 from pathlib import Path
 
-from allegrex import decode
+from allegrex import decode, format_instruction
 
 
 def read_header(data):
@@ -118,7 +118,8 @@ def inspect(path):
 
     print("entry code")
     for address, word in code:
-        print(f"0x{address:08x} 0x{word:08x} {decode(address, word)}")
+        instruction = decode(address, word)
+        print(f"0x{address:08x} 0x{word:08x} {format_instruction(instruction)}")
 
 
 def main():
