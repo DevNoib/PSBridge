@@ -5,9 +5,10 @@ import sys
 from pathlib import Path
 
 from allegrex import branch_names, decode, target_of
-from elf_reader import read_code, read_function, read_header, read_segments
+from elf_reader import read_code, read_function
 from imports import find_module, read_imports
 from r5900 import emit
+from relocate import relocate
 
 
 def direct_target(instruction):
@@ -95,10 +96,9 @@ def add_branch_with_long_delay(lines, address, instruction, delay, label):
 
 def recompile(input_path, output_path):
     print("recompilando... deixa o cara gozar")
-    data = input_path.read_bytes()
-    _, entry, ph_offset, ph_size, ph_count = read_header(data)
-    segments = read_segments(data, ph_offset, ph_size, ph_count)
-    names = check_instructions(data)
+    elf = input_path.read_bytes()
+    names = check_instructions(elf)
+    data, segments, entry, relocations = relocate(elf)
 
     module = find_module(data, segments)
 
@@ -158,6 +158,7 @@ def recompile(input_path, output_path):
     print(f"funções {len(functions)}")
     print(f"instruções {len(code)}")
     print(f"tipos de instrução {len(names)}")
+    print(f"relocações {relocations}")
     print(f"imports usados {sum(address in import_map for address in external)}")
     print(f"alvos externos {len(external)}")
     print("voltamo porra")
