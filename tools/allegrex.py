@@ -5,13 +5,29 @@ registers = (
     "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
 )
 
+two_reg_branches = ("beq", "bne", "beql", "bnel")
+one_reg_branches = (
+    "bltz", "bgez", "bltzl", "bgezl",
+    "blez", "bgtz", "blezl", "bgtzl",
+)
+float_branches = ("bc1f", "bc1t", "bc1fl", "bc1tl")
+branch_names = two_reg_branches + one_reg_branches + float_branches
+
 
 def reg(index):
     return f"${registers[index]}"
 
 
+def freg(index):
+    return f"$f{index}"
+
+
 def signed(value):
     return value - 0x10000 if value & 0x8000 else value
+
+
+def branch_target(address, value):
+    return (address + 4 + (signed(value) << 2)) & 0xffffffff
 
 
 def decode(address, word):
@@ -25,76 +41,184 @@ def decode(address, word):
 
     if word == 0:
         return "nop",
-    if op == 0 and funct == 0:
-        return "sll", rd, rt, shift
-    if op == 0 and funct == 2:
-        return "srl", rd, rt, shift
-    if op == 0 and funct == 8:
-        return "jr", rs
-    if op == 0 and funct == 9:
-        return "jalr", rd, rs
-    if op == 0 and funct == 0x21:
-        return "addu", rd, rs, rt
-    if op == 0 and funct == 0x25:
-        return "or", rd, rs, rt
-    if op == 0 and funct == 0x26:
-        return "xor", rd, rs, rt
+
+    if op == 0:
+        if funct == 0:
+            return "sll", rd, rt, shift
+        if funct == 2:
+            return "srl", rd, rt, shift
+        if funct == 3:
+            return "sra", rd, rt, shift
+        if funct in (4, 6, 7):
+            return {4: "sllv", 6: "srlv", 7: "srav"}[funct], rd, rt, rs
+        if funct == 8:
+            return "jr", rs
+        if funct == 9:
+            return "jalr", rd, rs
+        if funct in (10, 11):
+            return ("movz" if funct == 10 else "movn"), rd, rs, rt
+        if funct in (16, 18):
+            return ("mfhi" if funct == 16 else "mflo"), rd
+        if funct == 0x16:
+            return "clz", rd, rs
+        if funct in (24, 25, 26, 27, 28):
+            name = {24: "mult", 25: "multu", 26: "div", 27: "divu", 28: "madd"}[funct]
+            return name, rs, rt, word
+        if funct == 13:
+            return "break", (word >> 6) & 0xfffff
+        if funct in (0x21, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2a, 0x2b, 0x2c, 0x2d):
+            name = {
+                0x21: "addu", 0x23: "subu", 0x24: "and", 0x25: "or",
+                0x26: "xor", 0x27: "nor", 0x2a: "slt", 0x2b: "sltu",
+                0x2c: "max", 0x2d: "min",
+            }[funct]
+            return name, rd, rs, rt
+
     if op in (2, 3):
         target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
         return ("j" if op == 2 else "jal"), target
-    if op in (4, 5):
-        target = (address + 4 + (signed(value) << 2)) & 0xffffffff
-        return ("beq" if op == 4 else "bne"), rs, rt, target
-    if op == 9:
-        return "addiu", rt, rs, signed(value)
-    if op == 12:
-        return "andi", rt, rs, value
-    if op == 13:
-        return "ori", rt, rs, value
-    if op == 14:
-        return "xori", rt, rs, value
+
+    if op == 1 and rt in (0, 1, 2, 3):
+        name = {0: "bltz", 1: "bgez", 2: "bltzl", 3: "bgezl"}[rt]
+        return name, rs, branch_target(address, value)
+
+    if op in (4, 5, 20, 21):
+        name = {4: "beq", 5: "bne", 20: "beql", 21: "bnel"}[op]
+        return name, rs, rt, branch_target(address, value)
+
+    if op in (6, 7, 22, 23):
+        name = {6: "blez", 7: "bgtz", 22: "blezl", 23: "bgtzl"}[op]
+        return name, rs, branch_target(address, value)
+
+    if op in (9, 10, 11):
+        return {9: "addiu", 10: "slti", 11: "sltiu"}[op], rt, rs, signed(value)
+    if op in (12, 13, 14):
+        return {12: "andi", 13: "ori", 14: "xori"}[op], rt, rs, value
     if op == 15:
         return "lui", rt, value
-    if op == 35:
-        return "lw", rt, rs, signed(value)
-    if op == 40:
-        return "sb", rt, rs, signed(value)
-    if op == 41:
-        return "sh", rt, rs, signed(value)
-    if op == 43:
-        return "sw", rt, rs, signed(value)
+
+    if op == 0x11:
+        fmt = rs
+        fs = rd
+        fd = shift
+
+        if fmt == 0:
+            return "mfc1", rt, fs
+        if fmt == 4:
+            return "mtc1", rt, fs
+        if fmt == 8 and (rt & 3) in (0, 1, 2, 3):
+            name = ("bc1f", "bc1t", "bc1fl", "bc1tl")[rt & 3]
+            return name, branch_target(address, value)
+        if fmt == 16:
+            if funct in (0, 1, 2, 3):
+                return ("add.s", "sub.s", "mul.s", "div.s")[funct], fd, fs, rt
+            if funct == 6:
+                return "mov.s", fd, fs
+            if funct == 0x0d:
+                return "trunc.w.s", fd, fs
+            if funct == 0x32:
+                return "c.eq.s", fs, rt
+            if funct in (0x3c, 0x3d):
+                return "c.lt.s", fs, rt
+            if funct in (0x3e, 0x3f):
+                return "c.le.s", fs, rt
+        if fmt == 20 and funct == 0x20:
+            return "cvt.s.w", fd, fs
+
+    memory = {
+        32: "lb", 33: "lh", 34: "lwl", 35: "lw", 36: "lbu", 37: "lhu",
+        38: "lwr", 40: "sb", 41: "sh", 42: "swl", 43: "sw", 46: "swr",
+    }
+    if op in memory:
+        return memory[op], rt, rs, signed(value)
+    if op in (49, 57):
+        return ("lwc1" if op == 49 else "swc1"), rt, rs, signed(value)
+    if op == 0x2f:
+        return "cache", rt, rs, signed(value)
+
+    if op == 0x1f and funct == 0:
+        return "ext", rt, rs, shift, rd + 1
+    if op == 0x1f and funct == 4:
+        return "ins", rt, rs, shift, rd - shift + 1
 
     return "word", word
+
+
+def target_of(instruction):
+    name = instruction[0]
+
+    if name in ("j", "jal") + float_branches:
+        return instruction[1]
+    if name in one_reg_branches:
+        return instruction[2]
+    if name in two_reg_branches:
+        return instruction[3]
+
+    return None
 
 
 def format_instruction(instruction):
     name = instruction[0]
 
-    if name == "nop":
+    if name in ("nop", "cache"):
         return name
-    if name in ("sll", "srl"):
+    if name in ("sll", "srl", "sra"):
         _, rd, rt, shift = instruction
         return f"{name} {reg(rd)}, {reg(rt)}, {shift}"
+    if name in ("sllv", "srlv", "srav"):
+        _, rd, rt, rs = instruction
+        return f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"
     if name == "jr":
         return f"jr {reg(instruction[1])}"
     if name == "jalr":
         return f"jalr {reg(instruction[1])}, {reg(instruction[2])}"
-    if name in ("addu", "or", "xor"):
+    if name in ("addu", "subu", "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn", "min", "max"):
         _, rd, rs, rt = instruction
         return f"{name} {reg(rd)}, {reg(rs)}, {reg(rt)}"
+    if name in ("mfhi", "mflo"):
+        return f"{name} {reg(instruction[1])}"
+    if name in ("mult", "multu", "div", "divu", "madd"):
+        return f"{name} {reg(instruction[1])}, {reg(instruction[2])}"
+    if name == "clz":
+        return f"clz {reg(instruction[1])}, {reg(instruction[2])}"
+    if name == "break":
+        return f"break {instruction[1]}"
     if name in ("j", "jal"):
         return f"{name} 0x{instruction[1]:08x}"
-    if name in ("beq", "bne"):
+    if name in two_reg_branches:
         _, rs, rt, target = instruction
         return f"{name} {reg(rs)}, {reg(rt)}, 0x{target:08x}"
-    if name in ("addiu", "andi", "ori", "xori"):
+    if name in one_reg_branches:
+        _, rs, target = instruction
+        return f"{name} {reg(rs)}, 0x{target:08x}"
+    if name in float_branches:
+        return f"{name} 0x{instruction[1]:08x}"
+    if name in ("addiu", "slti", "sltiu", "andi", "ori", "xori"):
         _, rt, rs, value = instruction
-        value = str(value) if name == "addiu" else f"0x{value:x}"
-        return f"{name} {reg(rt)}, {reg(rs)}, {value}"
+        shown = str(value) if name in ("addiu", "slti", "sltiu") else f"0x{value:x}"
+        return f"{name} {reg(rt)}, {reg(rs)}, {shown}"
     if name == "lui":
         return f"lui {reg(instruction[1])}, 0x{instruction[2]:x}"
-    if name in ("lw", "sb", "sh", "sw"):
+    if name in ("lb", "lbu", "lh", "lhu", "lwl", "lwr", "lw", "sb", "sh", "swl", "swr", "sw"):
         _, rt, rs, offset = instruction
         return f"{name} {reg(rt)}, {offset}({reg(rs)})"
+    if name in ("lwc1", "swc1"):
+        _, ft, rs, offset = instruction
+        return f"{name} {freg(ft)}, {offset}({reg(rs)})"
+    if name in ("mfc1", "mtc1"):
+        _, rt, fs = instruction
+        return f"{name} {reg(rt)}, {freg(fs)}"
+    if name in ("add.s", "sub.s", "mul.s", "div.s"):
+        _, fd, fs, ft = instruction
+        return f"{name} {freg(fd)}, {freg(fs)}, {freg(ft)}"
+    if name in ("mov.s", "trunc.w.s", "cvt.s.w"):
+        _, fd, fs = instruction
+        return f"{name} {freg(fd)}, {freg(fs)}"
+    if name in ("c.eq.s", "c.lt.s", "c.le.s"):
+        _, fs, ft = instruction
+        return f"{name} {freg(fs)}, {freg(ft)}"
+    if name in ("ext", "ins"):
+        _, rt, rs, pos, size = instruction
+        return f"{name} {reg(rt)}, {reg(rs)}, {pos}, {size}"
 
     return f".word 0x{instruction[1]:08x}"

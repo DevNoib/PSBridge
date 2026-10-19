@@ -2,7 +2,7 @@ import struct
 import sys
 from pathlib import Path
 
-from allegrex import decode, format_instruction
+from allegrex import branch_names, decode, format_instruction, target_of
 
 
 def read_header(data):
@@ -43,6 +43,30 @@ def read_segments(data, ph_offset, ph_size, ph_count):
     return segments
 
 
+def read_code(data):
+    section_offset = struct.unpack_from("<I", data, 32)[0]
+    section_size, section_count = struct.unpack_from("<HH", data, 46)
+    code = []
+
+    if section_size < 40 or section_offset + section_size * section_count > len(data):
+        raise ValueError("bad section table")
+
+    for index in range(section_count):
+        offset = section_offset + index * section_size
+        _, kind, flags, address, file_offset, size = struct.unpack_from("<IIIIII", data, offset)
+
+        if not flags & 4 or kind == 8:
+            continue
+        if file_offset + size > len(data):
+            raise ValueError(f"bad section {index}")
+
+        for position in range(0, size - 3, 4):
+            word = struct.unpack_from("<I", data, file_offset + position)[0]
+            code.append((address + position, word))
+
+    return code
+
+
 def read_word(data, segments, address):
     for file_off, vaddr, file_size, _, flags, _ in segments:
         if not flags & 1:
@@ -69,10 +93,10 @@ def read_function(data, segments, entry, limit=4096):
 
             word = read_word(data, segments, address)
             code[address] = word
-            op = word >> 26
-            funct = word & 63
+            instruction = decode(address, word)
+            name = instruction[0]
 
-            if op not in (2, 3, 4, 5) and not (op == 0 and funct in (8, 9)):
+            if name not in ("j", "jal", "jr", "jalr") + branch_names:
                 address += 4
                 continue
 
@@ -80,15 +104,12 @@ def read_function(data, segments, entry, limit=4096):
             if delay not in code:
                 code[delay] = read_word(data, segments, delay)
 
-            if op in (4, 5):
-                value = word & 0xffff
-                offset = value - 0x10000 if value & 0x8000 else value
+            if name in branch_names:
                 pending.append(address + 8)
-                pending.append((address + 4 + offset * 4) & 0xffffffff)
-            elif op == 2:
-                target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
-                pending.append(target)
-            elif op == 3 or funct == 9:
+                pending.append(target_of(instruction))
+            elif name == "j":
+                pending.append(instruction[1])
+            elif name in ("jal", "jalr"):
                 pending.append(address + 8)
 
             break
