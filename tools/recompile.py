@@ -1,9 +1,12 @@
+# EU VOU DEIXAR OS COMENTARIOS EM PORTUGUES PORQUE EU SOU BRASILEIRO NESSE CARALHO ENTÃO VAI SE FUDER
+
 import struct
 import sys
 from pathlib import Path
 
 from allegrex import branch_names, decode, target_of
 from elf_reader import read_code, read_function, read_header, read_segments
+from imports import find_module, read_imports
 from r5900 import emit
 
 
@@ -18,7 +21,7 @@ def is_code(segments, address):
     return False
 
 
-def find_functions(data, segments, entry):
+def find_functions(data, segments, entry, import_map):
     functions = {}
     pending = [entry]
 
@@ -27,23 +30,28 @@ def find_functions(data, segments, entry):
         if start in functions:
             continue
 
-        code = read_function(data, segments, start)
+        code = read_function(data, segments, start, import_map)
         instructions = []
 
         for address, word in code:
             instruction = decode(address, word)
             if instruction[0] == "word":
-                raise ValueError(f"unsupported instruction at 0x{address:08x}")
+                raise ValueError(f"que porra de instrução é essa em 0x{address:08x}")
             instructions.append((address, instruction))
 
             if instruction[0] == "jal":
                 target = instruction[1]
-                if is_code(segments, target) and target not in functions:
+                if target not in import_map and is_code(segments, target) and target not in functions:
                     pending.append(target)
 
         functions[start] = instructions
 
     return functions
+
+
+def import_symbol(item):
+    library = "".join(char if char.isalnum() or char == "_" else "_" for char in item["library"])
+    return f"psp_{library}_{item['nid']:08x}"
 
 
 def check_instructions(data):
@@ -52,7 +60,7 @@ def check_instructions(data):
     for address, word in read_code(data):
         instruction = decode(address, word)
         if instruction[0] == "word":
-            raise ValueError(f"unsupported instruction at 0x{address:08x}")
+            raise ValueError(f"que porra de instrução é essa em 0x{address:08x}")
         names.add(instruction[0])
 
     return names
@@ -86,12 +94,22 @@ def add_branch_with_long_delay(lines, address, instruction, delay, label):
 
 
 def recompile(input_path, output_path):
-    print("recompiling... let him cook")
+    print("recompilando... deixa o cara gozar")
     data = input_path.read_bytes()
     _, entry, ph_offset, ph_size, ph_count = read_header(data)
     segments = read_segments(data, ph_offset, ph_size, ph_count)
     names = check_instructions(data)
-    functions = find_functions(data, segments, entry)
+
+    module = find_module(data, segments)
+
+    imports = read_imports(data, segments, module)
+    import_map = {
+        item["stub"]: item
+        for item in imports
+        if item["kind"] == "function"
+    }
+
+    functions = find_functions(data, segments, entry, import_map)
     code = {}
 
     for instructions in functions.values():
@@ -101,6 +119,8 @@ def recompile(input_path, output_path):
     addresses = set(code)
 
     def label(address):
+        if address in import_map:
+            return import_symbol(import_map[address])
         name = "guest" if address in starts or address not in addresses else "code"
         return f"{name}_{address:08x}"
 
@@ -112,8 +132,8 @@ def recompile(input_path, output_path):
 
     lines = [".set noreorder", ".text", ".globl guest_entry"]
 
-    for address in sorted(external):
-        lines.append(f".extern {label(address)}")
+    for symbol in sorted({label(address) for address in external}):
+        lines.append(f".extern {symbol}")
 
     for address in sorted(code):
         instruction = code[address]
@@ -127,19 +147,20 @@ def recompile(input_path, output_path):
             add_branch_with_long_delay(lines, address, instruction, delay, label)
             continue
         if instruction[0] in ("j", "jal", "jr", "jalr") and len(delay_lines) > 1:
-            raise ValueError(f"long delay slot at 0x{address + 4:08x}")
+            raise ValueError(f"esse delay slot ficou grande pra caralho em 0x{address + 4:08x}")
 
         for line in emit(instruction, label, address):
             add_line(lines, line)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n")
-    print(f"wrote {output_path}")
-    print(f"functions {len(functions)}")
-    print(f"instructions {len(code)}")
-    print(f"instruction types {len(names)}")
-    print(f"external targets {len(external)}")
-    print("we are so back")
+    print(f"escrevi {output_path}")
+    print(f"funções {len(functions)}")
+    print(f"instruções {len(code)}")
+    print(f"tipos de instrução {len(names)}")
+    print(f"imports usados {sum(address in import_map for address in external)}")
+    print(f"alvos externos {len(external)}")
+    print("voltamo porra")
 
 
 def main():
@@ -150,7 +171,7 @@ def main():
         recompile(input_path, output_path)
         return 0
     except (OSError, ValueError, struct.error) as error:
-        print(f"error {error}", file=sys.stderr)
+        print(f"deu ruim {error}", file=sys.stderr)
         return 1
 
 

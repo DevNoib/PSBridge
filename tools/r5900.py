@@ -138,4 +138,4 @@ def emit(instruction, label, address):
         ])
         return lines
 
-    raise ValueError(f"cannot emit {name}")
+    raise ValueError(f"não sei cuspir {name} no r5900")
