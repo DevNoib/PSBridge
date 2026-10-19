@@ -23,12 +23,13 @@ def read_string(data, segments, address):
     return data[offset:end].decode("ascii")
 
 
-def valid_address(segments, address):
+def valid_address(segments, address, size=0, file_only=False):
     if address == 0:
         return True
 
-    for _, vaddr, _, memory_size, _, _ in segments:
-        if vaddr <= address <= vaddr + memory_size:
+    for _, vaddr, file_size, memory_size, _, _ in segments:
+        limit = file_size if file_only else memory_size
+        if vaddr <= address and address + size <= vaddr + limit:
             return True
 
     return False
@@ -41,16 +42,16 @@ def find_module(data, segments):
         end = segment_offset + file_size - 52
 
         for offset in range(segment_offset, end + 1, 4):
-            attributes, version = struct.unpack_from("<HH", data, offset)
             raw_name = data[offset + 4:offset + 32]
 
-            if version != 0x0101 or b"\0" not in raw_name:
+            if b"\0" not in raw_name:
                 continue
 
             name = raw_name.split(b"\0", 1)[0]
             if not name or not all(32 <= char < 127 for char in name):
                 continue
 
+            attributes, version = struct.unpack_from("<HH", data, offset)
             gp, export_start, export_end, import_start, import_end = struct.unpack_from(
                 "<IIIII", data, offset + 32
             )
@@ -60,23 +61,33 @@ def find_module(data, segments):
                 continue
             if export_start > export_end or import_start > import_end:
                 continue
-            if (import_end - import_start) % 20:
+            if import_end == import_start:
+                continue
+
+            try:
+                imports = read_imports(data, segments, {
+                    "import_start": import_start,
+                    "import_end": import_end,
+                })
+            except (UnicodeDecodeError, ValueError, struct.error):
                 continue
 
             found.append({
                 "name": name.decode("ascii"),
                 "attributes": attributes,
+                "version": version,
                 "gp": gp,
                 "export_start": export_start,
                 "export_end": export_end,
                 "import_start": import_start,
                 "import_end": import_end,
+                "import_count": len(imports),
             })
 
     if not found:
         raise ValueError("o módulo do psp foi pra puta que pariu")
 
-    return max(found, key=lambda module: module["import_end"] - module["import_start"])
+    return max(found, key=lambda module: (module["import_count"], module["version"] == 0x0101))
 
 
 def read_imports(data, segments, module):
@@ -85,25 +96,53 @@ def read_imports(data, segments, module):
 
     while address < module["import_end"]:
         offset = file_offset(segments, address, 20)
-        name_address, _, _, length, _, functions, nid_address, stub_address = struct.unpack_from(
+        name_address, _, _, length, variables, functions, nid_address, stub_address = struct.unpack_from(
             "<IHHBBHII", data, offset
         )
 
-        if length < 5:
+        entry_size = length * 4
+        if length < 5 or address + entry_size > module["import_end"]:
             raise ValueError(f"esse import tá mais torto que minha pica em 0x{address:08x}")
 
         library = read_string(data, segments, name_address)
+
+        if functions and not valid_address(segments, nid_address, functions * 4, True):
+            raise ValueError(f"os nids sumiram em 0x{address:08x}")
+        if functions and not valid_address(segments, stub_address, functions * 8, True):
+            raise ValueError(f"os stubs sumiram em 0x{address:08x}")
 
         for index in range(functions):
             nid_offset = file_offset(segments, nid_address + index * 4, 4)
             nid = struct.unpack_from("<I", data, nid_offset)[0]
             imports.append({
                 "library": library,
+                "kind": "function",
                 "nid": nid,
                 "stub": stub_address + index * 8,
             })
 
-        address += length * 4
+        if variables:
+            if length < 6:
+                raise ValueError(f"as variáveis vieram sem endereço em 0x{address:08x}")
+
+            variable_address = struct.unpack_from("<I", data, offset + 20)[0]
+            if not valid_address(segments, variable_address, variables * 8, True):
+                raise ValueError(f"as variáveis sumiram em 0x{address:08x}")
+
+            for index in range(variables):
+                variable_offset = file_offset(segments, variable_address + index * 8, 8)
+                references, nid = struct.unpack_from("<II", data, variable_offset)
+                imports.append({
+                    "library": library,
+                    "kind": "variable",
+                    "nid": nid,
+                    "references": references,
+                })
+
+        address += entry_size
+
+    if address != module["import_end"]:
+        raise ValueError("a tabela de imports terminou no lugar errado")
 
     return imports
 
@@ -120,7 +159,10 @@ def inspect(path):
     print(f"arquivo {path}")
     print(f"módulo {module['name']}")
     print(f"bibliotecas {len(libraries)}")
-    print(f"funções {len(imports)}")
+    functions = sum(item["kind"] == "function" for item in imports)
+    variables = sum(item["kind"] == "variable" for item in imports)
+    print(f"funções {functions}")
+    print(f"variáveis {variables}")
 
     for library in libraries:
         print()
@@ -128,7 +170,10 @@ def inspect(path):
 
         for item in imports:
             if item["library"] == library:
-                print(f"  stub 0x{item['stub']:08x}  nid 0x{item['nid']:08x}")
+                if item["kind"] == "function":
+                    print(f"  stub 0x{item['stub']:08x}  nid 0x{item['nid']:08x}")
+                else:
+                    print(f"  variável 0x{item['references']:08x}  nid 0x{item['nid']:08x}")
 
 
 def main():
