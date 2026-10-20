@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 from allegrex import branch_names, decode, target_of
-from elf_reader import read_code, read_function
+from analyze import find_functions
+from elf_reader import read_code
 from imports import find_module, read_imports
 from r5900 import emit
 from relocate import relocate
@@ -13,41 +14,6 @@ from relocate import relocate
 
 def direct_target(instruction):
     return target_of(instruction)
-
-
-def is_code(segments, address):
-    for _, vaddr, file_size, _, flags, _ in segments:
-        if flags & 1 and vaddr <= address <= vaddr + file_size - 4:
-            return True
-    return False
-
-
-def find_functions(data, segments, entry, import_map):
-    functions = {}
-    pending = [entry]
-
-    while pending:
-        start = pending.pop()
-        if start in functions:
-            continue
-
-        code = read_function(data, segments, start, import_map)
-        instructions = []
-
-        for address, word in code:
-            instruction = decode(address, word)
-            if instruction[0] == "word":
-                raise ValueError(f"que porra de instrução é essa em 0x{address:08x}")
-            instructions.append((address, instruction))
-
-            if instruction[0] == "jal":
-                target = instruction[1]
-                if target not in import_map and is_code(segments, target) and target not in functions:
-                    pending.append(target)
-
-        functions[start] = instructions
-
-    return functions
 
 
 def import_symbol(item):
@@ -109,7 +75,7 @@ def recompile(input_path, output_path):
         if item["kind"] == "function"
     }
 
-    functions = find_functions(data, segments, entry, import_map)
+    functions, callbacks = find_functions(data, segments, entry, import_map)
     code = {}
 
     for instructions in functions.values():
@@ -130,7 +96,7 @@ def recompile(input_path, output_path):
         if target is not None and target not in addresses:
             external.add(target)
 
-    lines = [".set noreorder", ".text", ".globl guest_entry"]
+    lines = [".set noreorder", ".set noat", ".text", ".globl guest_entry"]
 
     for symbol in sorted({label(address) for address in external}):
         lines.append(f".extern {symbol}")
@@ -156,6 +122,7 @@ def recompile(input_path, output_path):
     output_path.write_text("\n".join(lines) + "\n")
     print(f"escrevi {output_path}")
     print(f"funções {len(functions)}")
+    print(f"callbacks {len(callbacks)}")
     print(f"instruções {len(code)}")
     print(f"tipos de instrução {len(names)}")
     print(f"relocações {relocations}")
