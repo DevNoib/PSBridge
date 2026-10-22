@@ -20,7 +20,7 @@ def read_header(data):
         raise ValueError("essa porra tem que ser mips")
 
     if ph_size < 32:
-        raise ValueError("o cabeçalho do programa veio mais fudido que prisioneiro em prisão")
+        raise ValueError("o cabeçalho do programa veio mais fudido que prisioneiro quando vai pegar o sabonete que caiu na prisão")
 
     if ph_offset + ph_size * ph_count > len(data):
         raise ValueError("a tabela de segmentos veio toda fudida")
