@@ -73,7 +73,7 @@ def recompile(input_path, output_path):
 
     elf = input_path.read_bytes()
     names = check_instructions(elf)
-    data, segments, entry, relocations = relocate(elf)
+    data, segments, entry, relocations, indirect_targets = relocate(elf)
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
 
@@ -83,7 +83,13 @@ def recompile(input_path, output_path):
         if item["kind"] == "function"
     }
 
-    functions, callbacks = find_functions(data, segments, entry, import_map)
+    functions, callbacks = find_functions(
+        data,
+        segments,
+        entry,
+        import_map,
+        indirect_targets,
+    )
     code = {}
 
     for instructions in functions.values():
@@ -137,6 +143,7 @@ def recompile(input_path, output_path):
     print(f"instruções {len(code)}")
     print(f"tipos de instrução {len(names)}")
     print(f"relocações {relocations}")
+    print(f"alvos indiretos gostosos {len(indirect_targets)}")
     print(f"imports usados {sum(address in import_map for address in external)}")
     print(f"alvos externos {len(external)}")
     print("voltamo porra")

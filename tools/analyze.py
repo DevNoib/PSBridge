@@ -107,10 +107,11 @@ def callback_value(instructions, index, register):
     return result_value(instructions, index, delay, set())
 
 
-def find_functions(data, segments, entry, import_map):
+def find_functions(data, segments, entry, import_map, indirect_targets=()):
     functions = {}
     callbacks = set()
-    pending = [entry]
+    pending = sorted(indirect_targets, reverse=True)
+    pending.append(entry)
 
     while pending:
         start = pending.pop()

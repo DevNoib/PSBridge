@@ -82,6 +82,23 @@ def target_address(programs, relocation, base):
     return base + programs[target][2]
 
 
+def find_low_relocation(table, index):
+    info = table[index][1]
+
+    for next_index in range(index + 1, len(table)):
+        next_relocation = table[next_index]
+        kind = next_relocation[1] & 0xff
+
+        if kind == 5:
+            continue
+        if kind not in (1, 6):
+            continue
+        if (next_relocation[1] >> 8) == (info >> 8):
+            return next_index
+
+    return None
+
+
 def apply_table(image, programs, table, base, image_start, counts):
     words = []
 
@@ -103,25 +120,12 @@ def apply_table(image, programs, table, base, image_start, counts):
         elif kind == 4:
             patched = (word & 0xfc000000) | (((word & 0x03ffffff) + (target >> 2)) & 0x03ffffff)
         elif kind == 5:
-            patched = None
-
-            for next_index in range(index + 1, len(table)):
-                next_relocation = table[next_index]
-                next_kind = next_relocation[1] & 0xff
-
-                if next_kind == 5:
-                    continue
-                if next_kind not in (1, 6):
-                    continue
-                if (next_relocation[1] >> 8) != (info >> 8):
-                    continue
-
-                value = ((word & 0xffff) << 16) + signed(words[next_index] & 0xffff) + target
-                patched = (word & 0xffff0000) | (((value + 0x8000) >> 16) & 0xffff)
-                break
-
-            if patched is None:
+            next_index = find_low_relocation(table, index)
+            if next_index is None:
                 raise ValueError(f"o hi16 ficou solteiro em 0x{offset:08x}")
+
+            value = ((word & 0xffff) << 16) + signed(words[next_index] & 0xffff) + target
+            patched = (word & 0xffff0000) | (((value + 0x8000) >> 16) & 0xffff)
         elif kind in (1, 6):
             patched = (word & 0xffff0000) | (((word & 0xffff) + target) & 0xffff)
         else:
@@ -129,6 +133,50 @@ def apply_table(image, programs, table, base, image_start, counts):
 
         struct.pack_into("<I", image, offset, patched & 0xffffffff)
         counts[kind] = counts.get(kind, 0) + 1
+
+
+def find_code_pointers(image, programs, sections, tables, base, image_start):
+    ranges = []
+
+    for section in sections:
+        _, kind, flags, address, _, size, _, _, _, _ = section
+
+        if flags & 4 and kind != 8:
+            ranges.append((base + address, base + address + size))
+
+    pointers = set()
+
+    def add_pointer(value):
+        if value % 4:
+            return
+
+        if any(start <= value < end for start, end in ranges):
+            pointers.add(value)
+
+    for table in tables:
+        for index, relocation in enumerate(table):
+            kind = relocation[1] & 0xff
+            offset = patch_offset(programs, relocation, image_start)
+            word = struct.unpack_from("<I", image, offset)[0]
+
+            if kind == 2:
+                add_pointer(word)
+                continue
+
+            if kind != 5:
+                continue
+
+            next_index = find_low_relocation(table, index)
+            if next_index is None:
+                continue
+
+            next_relocation = table[next_index]
+            next_offset = patch_offset(programs, next_relocation, image_start)
+            low = struct.unpack_from("<I", image, next_offset)[0]
+            value = ((word & 0xffff) << 16) + signed(low & 0xffff)
+            add_pointer(value & 0xffffffff)
+
+    return pointers
 
 
 def relocate(data, base=0x00400000):
@@ -139,6 +187,15 @@ def relocate(data, base=0x00400000):
 
     for table in tables:
         apply_table(image, programs, table, base, image_start, counts)
+
+    code_pointers = find_code_pointers(
+        image,
+        programs,
+        sections,
+        tables,
+        base,
+        image_start,
+    )
 
     segments = []
     for kind, _, address, _, file_size, memory_size, flags, align in programs:
@@ -154,7 +211,7 @@ def relocate(data, base=0x00400000):
 
     entry = base + struct.unpack_from("<I", data, 24)[0]
     total = sum(counts.values())
-    return bytes(image), segments, entry, total
+    return bytes(image), segments, entry, total, code_pointers
 
 
 def main():
@@ -162,11 +219,12 @@ def main():
     output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("build/game.bin")
 
     try:
-        image, _, entry, count = relocate(input_path.read_bytes())
+        image, _, entry, count, code_pointers = relocate(input_path.read_bytes())
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(image)
         print(f"entrada realocada 0x{entry:08x}")
         print(f"relocações {count}")
+        print(f"ponteiros de código {len(code_pointers)}")
         print(f"escrevi {output_path}")
         return 0
     except (OSError, ValueError, struct.error) as error:
