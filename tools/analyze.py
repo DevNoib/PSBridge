@@ -23,10 +23,13 @@ def is_code(segments, address):
 def output_register(instruction):
     if instruction[0] in writes_register:
         return instruction[1]
+
     if instruction[0] == "jal":
         return 31
+
     if instruction[0] == "jalr":
         return instruction[1]
+
     return None
 
 
@@ -35,21 +38,29 @@ def result_value(instructions, index, instruction, seen):
 
     if name == "lui":
         return instruction[2] << 16
+
     if name in ("addiu", "ori"):
         source = register_value(instructions, index, instruction[2], seen.copy())
         if source is None:
             return None
+
         if name == "addiu":
             return (source + instruction[3]) & 0xffffffff
+
         return source | instruction[3]
+
     if name in ("addu", "or"):
         left = register_value(instructions, index, instruction[2], seen.copy())
         right = register_value(instructions, index, instruction[3], seen.copy())
+
         if left is None or right is None:
             return None
+
         if name == "addu":
             return (left + right) & 0xffffffff
+
         return left | right
+
     if name == "sll":
         value = register_value(instructions, index, instruction[2], seen.copy())
         if value is not None:
@@ -66,6 +77,7 @@ def register_value(instructions, index, register, seen=None):
     key = index, register
     if key in seen:
         return None
+
     seen.add(key)
 
     controls = ("j", "jal", "jr", "jalr") + branch_names

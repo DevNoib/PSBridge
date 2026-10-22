@@ -8,6 +8,7 @@ from allegrex import branch_names, decode, format_instruction, target_of
 def read_header(data):
     if len(data) < 52 or data[:4] != b"\x7fELF":
         raise ValueError("esse arquivo tá de sacanagem")
+
     if data[4] != 1 or data[5] != 1:
         raise ValueError("essa porra tem que ser elf 32-bit little-endian")
 
@@ -17,8 +18,10 @@ def read_header(data):
 
     if machine != 8:
         raise ValueError("essa porra tem que ser mips")
+
     if ph_size < 32:
         raise ValueError("o cabeçalho do programa veio mais fudido que prisioneiro em prisão")
+
     if ph_offset + ph_size * ph_count > len(data):
         raise ValueError("a tabela de segmentos veio toda fudida")
 
@@ -35,6 +38,7 @@ def read_segments(data, ph_offset, ph_size, ph_count):
 
         if kind != 1:
             continue
+
         if file_off + file_size > len(data):
             raise ValueError(f"o segmento {index} veio fudido")
 
@@ -57,6 +61,7 @@ def read_code(data):
 
         if not flags & 4 or kind == 8:
             continue
+
         if file_offset + size > len(data):
             raise ValueError(f"a seção {index} veio fudida")
 
@@ -71,6 +76,7 @@ def read_word(data, segments, address):
     for file_off, vaddr, file_size, _, flags, _ in segments:
         if not flags & 1:
             continue
+
         if not vaddr <= address <= vaddr + file_size - 4:
             continue
 
@@ -91,6 +97,7 @@ def read_function(data, segments, entry, stops=None, limit=4096):
         while address not in code:
             if address in stops:
                 break
+
             if len(code) >= limit:
                 raise ValueError("essa função tá grande pra caralho")
 

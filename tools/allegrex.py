@@ -51,21 +51,27 @@ def decode(address, word):
             return "sra", rd, rt, shift
         if funct in (4, 6, 7):
             return {4: "sllv", 6: "srlv", 7: "srav"}[funct], rd, rt, rs
+
         if funct == 8:
             return "jr", rs
         if funct == 9:
             return "jalr", rd, rs
+
         if funct in (10, 11):
             return ("movz" if funct == 10 else "movn"), rd, rs, rt
+
         if funct in (16, 18):
             return ("mfhi" if funct == 16 else "mflo"), rd
         if funct == 0x16:
             return "clz", rd, rs
+
         if funct in (24, 25, 26, 27, 28):
             name = {24: "mult", 25: "multu", 26: "div", 27: "divu", 28: "madd"}[funct]
             return name, rs, rt, word
+
         if funct == 13:
             return "break", (word >> 6) & 0xfffff
+
         if funct in (0x21, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2a, 0x2b, 0x2c, 0x2d):
             name = {
                 0x21: "addu", 0x23: "subu", 0x24: "and", 0x25: "or",
@@ -106,9 +112,11 @@ def decode(address, word):
             return "mfc1", rt, fs
         if fmt == 4:
             return "mtc1", rt, fs
+
         if fmt == 8 and (rt & 3) in (0, 1, 2, 3):
             name = ("bc1f", "bc1t", "bc1fl", "bc1tl")[rt & 3]
             return name, branch_target(address, value)
+
         if fmt == 16:
             if funct in (0, 1, 2, 3):
                 return ("add.s", "sub.s", "mul.s", "div.s")[funct], fd, fs, rt
@@ -122,6 +130,7 @@ def decode(address, word):
                 return "c.lt.s", fs, rt
             if funct in (0x3e, 0x3f):
                 return "c.le.s", fs, rt
+
         if fmt == 20 and funct == 0x20:
             return "cvt.s.w", fd, fs
 
@@ -131,8 +140,10 @@ def decode(address, word):
     }
     if op in memory:
         return memory[op], rt, rs, signed(value)
+
     if op in (49, 57):
         return ("lwc1" if op == 49 else "swc1"), rt, rs, signed(value)
+
     if op == 0x2f:
         return "cache", rt, rs, signed(value)
 
@@ -162,29 +173,36 @@ def format_instruction(instruction):
 
     if name in ("nop", "cache"):
         return name
+
     if name in ("sll", "srl", "sra"):
         _, rd, rt, shift = instruction
         return f"{name} {reg(rd)}, {reg(rt)}, {shift}"
     if name in ("sllv", "srlv", "srav"):
         _, rd, rt, rs = instruction
         return f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"
+
     if name == "jr":
         return f"jr {reg(instruction[1])}"
     if name == "jalr":
         return f"jalr {reg(instruction[1])}, {reg(instruction[2])}"
+
     if name in ("addu", "subu", "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn", "min", "max"):
         _, rd, rs, rt = instruction
         return f"{name} {reg(rd)}, {reg(rs)}, {reg(rt)}"
+
     if name in ("mfhi", "mflo"):
         return f"{name} {reg(instruction[1])}"
     if name in ("mult", "multu", "div", "divu", "madd"):
         return f"{name} {reg(instruction[1])}, {reg(instruction[2])}"
+
     if name == "clz":
         return f"clz {reg(instruction[1])}, {reg(instruction[2])}"
     if name == "break":
         return f"break {instruction[1]}"
+
     if name in ("j", "jal"):
         return f"{name} 0x{instruction[1]:08x}"
+
     if name in two_reg_branches:
         _, rs, rt, target = instruction
         return f"{name} {reg(rs)}, {reg(rt)}, 0x{target:08x}"
@@ -193,18 +211,22 @@ def format_instruction(instruction):
         return f"{name} {reg(rs)}, 0x{target:08x}"
     if name in float_branches:
         return f"{name} 0x{instruction[1]:08x}"
+
     if name in ("addiu", "slti", "sltiu", "andi", "ori", "xori"):
         _, rt, rs, value = instruction
         shown = str(value) if name in ("addiu", "slti", "sltiu") else f"0x{value:x}"
         return f"{name} {reg(rt)}, {reg(rs)}, {shown}"
+
     if name == "lui":
         return f"lui {reg(instruction[1])}, 0x{instruction[2]:x}"
+
     if name in ("lb", "lbu", "lh", "lhu", "lwl", "lwr", "lw", "sb", "sh", "swl", "swr", "sw"):
         _, rt, rs, offset = instruction
         return f"{name} {reg(rt)}, {offset}({reg(rs)})"
     if name in ("lwc1", "swc1"):
         _, ft, rs, offset = instruction
         return f"{name} {freg(ft)}, {offset}({reg(rs)})"
+
     if name in ("mfc1", "mtc1"):
         _, rt, fs = instruction
         return f"{name} {reg(rt)}, {freg(fs)}"
@@ -217,6 +239,7 @@ def format_instruction(instruction):
     if name in ("c.eq.s", "c.lt.s", "c.le.s"):
         _, fs, ft = instruction
         return f"{name} {freg(fs)}, {freg(ft)}"
+
     if name in ("ext", "ins"):
         _, rt, rs, pos, size = instruction
         return f"{name} {reg(rt)}, {reg(rs)}, {pos}, {size}"

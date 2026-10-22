@@ -28,16 +28,19 @@ def emit(instruction, label, address):
 
     if name == "nop":
         return [name]
+
     if name in ("sll", "srl", "sra"):
         _, rd, rt, shift = instruction
         return [f"{name} {reg(rd)}, {reg(rt)}, {shift}"]
     if name in ("sllv", "srlv", "srav"):
         _, rd, rt, rs = instruction
         return [f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"]
+
     if name == "jr":
         return [f"jr {reg(instruction[1])}"]
     if name == "jalr":
         return [f"jalr {reg(instruction[1])}, {reg(instruction[2])}"]
+
     if name in ("addu", "subu", "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn"):
         _, rd, rs, rt = instruction
         return [f"{name} {reg(rd)}, {reg(rs)}, {reg(rt)}"]
@@ -45,16 +48,19 @@ def emit(instruction, label, address):
         _, rd, rs, rt = instruction
         host = "pminw" if name == "min" else "pmaxw"
         return [f"{host} {reg(rd)}, {reg(rs)}, {reg(rt)}", f"sll {reg(rd)}, {reg(rd)}, 0"]
+
     if name in ("mfhi", "mflo"):
         return [f"{name} {reg(instruction[1])}"]
     if name in ("mult", "multu", "madd"):
         return [f"{name} {reg(instruction[1])}, {reg(instruction[2])}"]
     if name in ("div", "divu"):
         return [f".word 0x{instruction[3]:08x}"]
+
     if name == "clz":
         _, rd, rs = instruction
         zero = f"lower_{address:08x}_zero"
         done = f"lower_{address:08x}_done"
+
         return [
             f"beq {reg(rs)}, $0, {zero}",
             f"srl {reg(rd)}, {reg(rs)}, 1",
@@ -65,13 +71,17 @@ def emit(instruction, label, address):
             f"ori {reg(rd)}, $0, 32",
             f"{done}:",
         ]
+
     if name == "break":
         return [f"break {instruction[1]}"]
+
     if name in ("j", "jal"):
         if instruction[1] == 0:
             word = 0x08000000 if name == "j" else 0x0c000000
             return [f".word 0x{word:08x}"]
+
         return [f"{name} {label(instruction[1])}"]
+
     if name in two_reg_branches:
         _, rs, rt, target = instruction
         return [f"{name} {reg(rs)}, {reg(rt)}, {label(target)}"]
@@ -80,18 +90,21 @@ def emit(instruction, label, address):
         return [f"{name} {reg(rs)}, {label(target)}"]
     if name in float_branches:
         return [f"{name} {label(instruction[1])}"]
+
     if name in ("addiu", "slti", "sltiu", "andi", "ori", "xori"):
         _, rt, rs, value = instruction
         shown = str(value) if name in ("addiu", "slti", "sltiu") else f"0x{value:x}"
         return [f"{name} {reg(rt)}, {reg(rs)}, {shown}"]
     if name == "lui":
         return [f"lui {reg(instruction[1])}, 0x{instruction[2]:x}"]
+
     if name in ("lb", "lbu", "lh", "lhu", "lwl", "lwr", "lw", "sb", "sh", "swl", "swr", "sw"):
         _, rt, rs, offset = instruction
         return [f"{name} {reg(rt)}, {offset}({reg(rs)})"]
     if name in ("lwc1", "swc1"):
         _, ft, rs, offset = instruction
         return [f"{name} {freg(ft)}, {offset}({reg(rs)})"]
+
     if name in ("mfc1", "mtc1"):
         _, rt, fs = instruction
         return [f"{name} {reg(rt)}, {freg(fs)}"]
@@ -104,41 +117,51 @@ def emit(instruction, label, address):
     if name in ("c.eq.s", "c.lt.s", "c.le.s"):
         _, fs, ft = instruction
         return [f"{name} {freg(fs)}, {freg(ft)}"]
+
     if name == "cache":
         return ["nop"]
+
     if name == "ext":
         _, rt, rs, pos, size = instruction
         left = 32 - pos - size
         right = 32 - size
         lines = []
+
         if left:
             lines.append(f"sll {reg(rt)}, {reg(rs)}, {left}")
         elif rt != rs:
             lines.append(f"or {reg(rt)}, {reg(rs)}, $0")
+
         if right:
             lines.append(f"srl {reg(rt)}, {reg(rt)}, {right}")
+
         return lines or ["nop"]
+
     if name == "ins":
         _, rt, rs, pos, size = instruction
         mask = ((1 << size) - 1) << pos if size < 32 else 0xffffffff
         scratch = [item for item in (26, 27, 1, 25, 24, 23, 22, 21) if item not in (rs, rt)][:2]
         first, second = scratch
         lines = [f"mthi1 {reg(first)}", f"mtlo1 {reg(second)}"]
+
         lines.extend(load_value(first, mask))
         lines.extend([
             f"nor {reg(second)}, {reg(first)}, $0",
             f"and {reg(rt)}, {reg(rt)}, {reg(second)}",
         ])
+
         if pos:
             lines.append(f"sll {reg(second)}, {reg(rs)}, {pos}")
         elif second != rs:
             lines.append(f"or {reg(second)}, {reg(rs)}, $0")
+
         lines.extend([
             f"and {reg(second)}, {reg(second)}, {reg(first)}",
             f"or {reg(rt)}, {reg(rt)}, {reg(second)}",
             f"mflo1 {reg(second)}",
             f"mfhi1 {reg(first)}",
         ])
+
         return lines
 
     raise ValueError(f"não sei cuspir {name} no r5900")

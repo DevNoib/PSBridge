@@ -17,7 +17,11 @@ def direct_target(instruction):
 
 
 def import_symbol(item):
-    library = "".join(char if char.isalnum() or char == "_" else "_" for char in item["library"])
+    library = "".join(
+        char if char.isalnum() or char == "_" else "_"
+        for char in item["library"]
+    )
+
     return f"psp_{library}_{item['nid']:08x}"
 
 
@@ -46,29 +50,33 @@ def add_branch_with_long_delay(lines, address, instruction, delay, label):
 
     for line in emit(instruction, lambda _: taken, address):
         add_line(lines, line)
+
     add_line(lines, "nop")
 
     if not likely:
         for line in emit(delay, label, address + 0x100000000):
             add_line(lines, line)
+
     add_line(lines, f"j {fallthrough}")
     add_line(lines, "nop")
     lines.append(f"{taken}:")
+
     for line in emit(delay, label, address + 0x200000000):
         add_line(lines, line)
+
     add_line(lines, f"j {target}")
     add_line(lines, "nop")
 
 
 def recompile(input_path, output_path):
     print("recompilando... deixa o cara gozar")
+
     elf = input_path.read_bytes()
     names = check_instructions(elf)
     data, segments, entry, relocations = relocate(elf)
-
     module = find_module(data, segments)
-
     imports = read_imports(data, segments, module)
+
     import_map = {
         item["stub"]: item
         for item in imports
@@ -105,6 +113,7 @@ def recompile(input_path, output_path):
         instruction = code[address]
         if address == entry:
             lines.append("guest_entry:")
+
         lines.append(f"{label(address)}:")
         delay = code.get(address + 4)
         delay_lines = emit(delay, label, address + 4) if delay else []
@@ -112,6 +121,7 @@ def recompile(input_path, output_path):
         if instruction[0] in branch_names and len(delay_lines) > 1:
             add_branch_with_long_delay(lines, address, instruction, delay, label)
             continue
+
         if instruction[0] in ("j", "jal", "jr", "jalr") and len(delay_lines) > 1:
             raise ValueError(f"esse delay slot ficou grande pra caralho em 0x{address + 4:08x}")
 
@@ -120,6 +130,7 @@ def recompile(input_path, output_path):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n")
+
     print(f"escrevi {output_path}")
     print(f"funções {len(functions)}")
     print(f"callbacks {len(callbacks)}")
