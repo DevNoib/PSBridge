@@ -68,6 +68,9 @@ def emit(instruction, label, address):
     if name == "break":
         return [f"break {instruction[1]}"]
     if name in ("j", "jal"):
+        if instruction[1] == 0:
+            word = 0x08000000 if name == "j" else 0x0c000000
+            return [f".word 0x{word:08x}"]
         return [f"{name} {label(instruction[1])}"]
     if name in two_reg_branches:
         _, rs, rt, target = instruction

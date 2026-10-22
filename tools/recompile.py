@@ -93,7 +93,7 @@ def recompile(input_path, output_path):
     external = set()
     for instruction in code.values():
         target = direct_target(instruction)
-        if target is not None and target not in addresses:
+        if target not in (None, 0) and target not in addresses:
             external.add(target)
 
     lines = [".set noreorder", ".set noat", ".text", ".globl guest_entry"]
