@@ -23,4 +23,10 @@ agora precisamos terminar algumas coisas no recompilador
 depois criar a runtime basica acho que sem os graficos e o audio com certeza não
 focar na runtime e na recompilação aqui pra bater certo
 
+
+certo edição 2
+agora ja conseguimos chegar na camada quase final e falta agora a runtime
+pra compilar la tudo certo e funcionar eu espero kkkkk
+
+
 fazendo cada uma dessas coisas nós conseguimos chegar no primeiro jogo rodando e finalmente gozar
