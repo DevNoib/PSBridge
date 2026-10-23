@@ -1,0 +1,26 @@
+oque temos atualmente é o bagulho ja ele o elf inclusive pra quem for 
+testar eu descomprimi o elf usando o PPSSPP ne que tem como 
+por descompactado la o elf ai eu só peguei e to usando o 
+xenonia como base se não me engano esse é o nome do jogo
+
+até agora fizemos o seguinte
+
+fizemos o leitor do elf
+o relocador pra arrumar os endereços do jogo
+o leitor da tabela de imports e dos nids
+o decoder das instruções allegrex usadas pelo jogo
+começamos a conversão dessas instruções pro r5900 do ps2 importante lembrar que ainda não terminei tudo
+mas ja da pra botar varias coisas na chapa que delicia
+o recompilador encontrar as funções e callbacks
+ele reconhece os imports em vez de tentar recompilar eles
+ele encontra as funções chamadas por ponteiro
+ele consegue gerar o game.s e montar o game.o sem erro
+e o resto ler ai ne sua cachorra ta achando que vai ter tudo na mão?
+
+agora na teoria precisamos fazer o seguinte
+
+agora precisamos terminar algumas coisas no recompilador 
+depois criar a runtime basica acho que sem os graficos e o audio com certeza não
+focar na runtime e na recompilação aqui pra bater certo
+
+fazendo cada uma dessas coisas nós conseguimos chegar no primeiro jogo rodando e finalmente gozar
