@@ -4,6 +4,86 @@ from pathlib import Path
 
 from elf_reader import read_header, read_segments
 
+def import_symbol(item) :
+    library = "".join(
+        char if char.isalnum() or char == "_" else "_"
+        for char in item ["library"]
+    )
+
+    return f"psp_{library}_{item['nid']:08x}"
+
+def link_imports(lines, imports):
+    variables = [item for item in imports if item ["kind"] == "variable"]
+
+    if variables:
+        raise ValueError("gozei e não sei ligar ainda esse import")
+
+    functions = {}
+
+    for item in sorted(imports, key=lambda entry: entry["stub"]):
+        if item["kind"] != "function":
+            continue
+        
+
+        functions.setdefault((item["library"], item["nid"]), item)
+
+    functions = list(functions.value())
+
+    libraries = {
+        name: f"psp_import_library{index}"
+        for index, name in enumerate(sorted({item["library"] for item in functions}))
+    }
+
+    lines.extend([
+        '.section .text.psp_imports, "ax", @progbits',
+        ".balign 4",
+        ".extern psbridge_import",
+    ])
+
+    for index, item in enumerate(functions):
+        symbol = import_symbol(item)
+        descriptor = f"psp_import_{index}"
+
+        lins.extend ([
+            f".globl {symbol}",
+            f".type {symbol}, @function",
+            f"{symbol}:",
+            f"       lui $25, %hi ({descriptor})"
+            f".size {symbol}, . - {symbol}",
+        ])
+
+        lins.extend([
+            '.section .rodata.psp_imports, "a",@progbits',
+            ".balign 4",
+            ".globl psp_import_count",
+            ".globl psp_import_table",
+            ".globl psp_import_table_end",
+            "psp_import_count:",
+            f".word {len(functions)}",
+            "psp_impor_table:",
+        ])
+
+    for index, item in enumerate(functions):
+        lines.extend([
+            f"psp_import_{index}: ",
+            f".word 0x{item['nid']:08x}",
+            f".word {libraries[item ['library']]}",
+            f".word 0x{item['stub']:08x}",
+            f".word {import_symbol(item)}",
+        ])
+
+    lines.append("psp_import_table_end:")
+
+    for library, symbol in libraries.items():
+        escaped = library.replace("\\", "\\\\").replace('"', '\\"')
+
+        lines.extend([
+            f"{symbol}:",
+            f'.asciz "{escaped}"',
+        ])
+
+    return len(functions)
+
 
 def file_offset(segments, address, size=1):
     for offset, vaddr, file_size, _, _, _ in segments:
