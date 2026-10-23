@@ -27,15 +27,15 @@ def link_imports(lines, imports):
 
         functions.setdefault((item["library"], item["nid"]), item)
 
-    functions = list(functions.value())
+    functions = list(functions.values())
 
     libraries = {
-        name: f"psp_import_library{index}"
+        name: f"psp_import_library_{index}"
         for index, name in enumerate(sorted({item["library"] for item in functions}))
     }
 
     lines.extend([
-        '.section .text.psp_imports, "ax", @progbits',
+        '.section .text.psp_imports,"ax",@progbits',
         ".balign 4",
         ".extern psbridge_import",
     ])
@@ -44,28 +44,30 @@ def link_imports(lines, imports):
         symbol = import_symbol(item)
         descriptor = f"psp_import_{index}"
 
-        lins.extend ([
+        lines.extend([
             f".globl {symbol}",
             f".type {symbol}, @function",
             f"{symbol}:",
-            f"       lui $25, %hi ({descriptor})"
+            f"    lui $25, %hi({descriptor})",
+            "    j psbridge_import",
+            f"    addiu $25, $25, %lo({descriptor})",
             f".size {symbol}, . - {symbol}",
         ])
 
-        lins.extend([
-            '.section .rodata.psp_imports, "a",@progbits',
-            ".balign 4",
-            ".globl psp_import_count",
-            ".globl psp_import_table",
-            ".globl psp_import_table_end",
-            "psp_import_count:",
-            f".word {len(functions)}",
-            "psp_impor_table:",
-        ])
+    lines.extend([
+        '.section .rodata.psp_imports,"a",@progbits',
+        ".balign 4",
+        ".globl psp_import_count",
+        ".globl psp_import_table",
+        ".globl psp_import_table_end",
+        "psp_import_count:",
+        f".word {len(functions)}",
+        "psp_import_table:",
+    ])
 
     for index, item in enumerate(functions):
         lines.extend([
-            f"psp_import_{index}: ",
+            f"psp_import_{index}:",
             f".word 0x{item['nid']:08x}",
             f".word {libraries[item ['library']]}",
             f".word 0x{item['stub']:08x}",

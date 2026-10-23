@@ -9,7 +9,7 @@ from allegrex import branch_names, decode, target_of
 from analyze import find_callbacks, find_jump_tables, output_register
 from elf_reader import read_code, read_word
 from module_sexytion import add_image, add_info, add_map, write_map
-from imports import find_module, read_imports, import_symbol, link_imports, read_imports
+from imports import find_module, read_imports, import_symbol, link_imports
 from r5900 import emit
 from relocate import relocate
 
@@ -197,9 +197,6 @@ def recompile(input_path, output_path):
 
     lines = [".set noreorder", ".set noat", ".text", ".globl guest_entry"]
 
-    for symbol in sorted({label(address) for address in external}):
-        lines.append(f".extern {symbol}")
-
     for address in sorted(code):
         instruction = code[address]
 
@@ -235,6 +232,8 @@ def recompile(input_path, output_path):
         for line in emit_at(address, instruction):
             add_line(lines, line)
 
+    linked_imports = link_imports(lines, imports)
+
     binary_path = output_path.with_suffix(".bin")
     map_path = output_path.with_suffix(".map")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +264,7 @@ def recompile(input_path, output_path):
     print(f"ponteiros de código que acharam o rumo {len(references['targets'])}")
     print(f"tabelas de salto que pararam de se esconder {len(jump_tables)}")
     print(f"endereços que não vão mais se perder no mapa {len(map_addresses)}")
-    print(f"imports amarrados na nega {len(external)}")
+    print(f"imports amarrados na nega {linked_imports}")
     print(f"dados do jogo no pacote {file_size} bytes")
     print(f"bss zerada bonitinha {len(data) - file_size} bytes")
     print("agora sim está de pé diferente do meu pa papel")
