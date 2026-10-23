@@ -135,7 +135,7 @@ def apply_table(image, programs, table, base, image_start, counts):
         counts[kind] = counts.get(kind, 0) + 1
 
 
-def find_code_pointers(image, programs, sections, tables, base, image_start):
+def find_code_references(image, programs, sections, tables, base, image_start):
     ranges = []
 
     for section in sections:
@@ -144,14 +144,20 @@ def find_code_pointers(image, programs, sections, tables, base, image_start):
         if flags & 4 and kind != 8:
             ranges.append((base + address, base + address + size))
 
-    pointers = set()
+    targets = set()
+    words = {}
+    high = {}
+    low_fixups = {}
 
     def add_pointer(value):
         if value % 4:
-            return
+            return False
 
         if any(start <= value < end for start, end in ranges):
-            pointers.add(value)
+            targets.add(value)
+            return True
+
+        return False
 
     for table in tables:
         for index, relocation in enumerate(table):
@@ -160,7 +166,11 @@ def find_code_pointers(image, programs, sections, tables, base, image_start):
             word = struct.unpack_from("<I", image, offset)[0]
 
             if kind == 2:
-                add_pointer(word)
+                if add_pointer(word):
+                    if offset in words and words[offset] != word:
+                        raise ValueError(f"o ponteiro em 0x{offset:08x} apontou pra dois lugares")
+
+                    words[offset] = word
                 continue
 
             if kind != 5:
@@ -172,11 +182,32 @@ def find_code_pointers(image, programs, sections, tables, base, image_start):
 
             next_relocation = table[next_index]
             next_offset = patch_offset(programs, next_relocation, image_start)
-            low = struct.unpack_from("<I", image, next_offset)[0]
-            value = ((word & 0xffff) << 16) + signed(low & 0xffff)
-            add_pointer(value & 0xffffffff)
+            low_word = struct.unpack_from("<I", image, next_offset)[0]
+            value = ((word & 0xffff) << 16) + signed(low_word & 0xffff)
+            value &= 0xffffffff
 
-    return pointers
+            if not add_pointer(value):
+                continue
+
+            high_address = base + image_start + offset
+
+            if high_address in high and high[high_address] != value:
+                raise ValueError(f"o hi16 em 0x{high_address:08x} apontou pra dois lugares")
+
+            high[high_address] = value
+            low_address = base + image_start + next_offset
+
+            if low_address in low_fixups and low_fixups[low_address] != value:
+                raise ValueError(f"o lo16 em 0x{low_address:08x} apontou pra dois lugares")
+
+            low_fixups[low_address] = value
+
+    return {
+        "targets": targets,
+        "words": words,
+        "high": high,
+        "low": low_fixups,
+    }
 
 
 def relocate(data, base=0x00400000):
@@ -188,7 +219,7 @@ def relocate(data, base=0x00400000):
     for table in tables:
         apply_table(image, programs, table, base, image_start, counts)
 
-    code_pointers = find_code_pointers(
+    code_references = find_code_references(
         image,
         programs,
         sections,
@@ -211,7 +242,7 @@ def relocate(data, base=0x00400000):
 
     entry = base + struct.unpack_from("<I", data, 24)[0]
     total = sum(counts.values())
-    return bytes(image), segments, entry, total, code_pointers
+    return bytes(image), segments, entry, total, code_references
 
 
 def main():
@@ -219,12 +250,12 @@ def main():
     output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("build/game.bin")
 
     try:
-        image, _, entry, count, code_pointers = relocate(input_path.read_bytes())
+        image, _, entry, count, code_references = relocate(input_path.read_bytes())
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(image)
         print(f"entrada realocada 0x{entry:08x}")
         print(f"relocações {count}")
-        print(f"ponteiros de código {len(code_pointers)}")
+        print(f"ponteiros de código {len(code_references['targets'])}")
         print(f"escrevi {output_path}")
         return 0
     except (OSError, ValueError, struct.error) as error:

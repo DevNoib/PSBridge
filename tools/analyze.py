@@ -107,6 +107,95 @@ def callback_value(instructions, index, register):
     return result_value(instructions, index, delay, set())
 
 
+def find_jump_tables(code, word_locations):
+    instructions = sorted(code.items())
+    tables = {}
+
+    for index, (address, instruction) in enumerate(instructions):
+        if instruction[0] != "jr" or instruction[1] == 31:
+            continue
+
+        register = instruction[1]
+        load_index = None
+
+        for position in range(index - 1, max(-1, index - 4), -1):
+            candidate_address, candidate = instructions[position]
+
+            if address - candidate_address > 12:
+                break
+
+            if candidate[0] == "lw" and candidate[1] == register:
+                load_index = position
+                break
+
+        if load_index is None:
+            raise ValueError(f"não achei a tabela do jr em 0x{address:08x}")
+
+        load = instructions[load_index][1]
+        base_register = load[2]
+        offset = load[3]
+        add_index = None
+
+        load_address = instructions[load_index][0]
+
+        for position in range(load_index - 1, max(-1, load_index - 8), -1):
+            candidate_address, candidate = instructions[position]
+
+            if load_address - candidate_address > 28:
+                break
+
+            if candidate[0] in ("addu", "addiu", "or") and candidate[1] == base_register:
+                add_index = position
+                break
+
+        if add_index is None:
+            raise ValueError(f"não achei a base da tabela em 0x{address:08x}")
+
+        add = instructions[add_index][1]
+
+        if add[0] == "addiu":
+            source = register_value(instructions, add_index, add[2])
+            values = [] if source is None else [(source + add[3]) & 0xffffffff]
+        else:
+            values = [
+                register_value(instructions, add_index, add[2]),
+                register_value(instructions, add_index, add[3]),
+            ]
+
+        bases = {
+            (value + offset) & 0xffffffff
+            for value in values
+            if value is not None
+        }
+        bases &= word_locations
+
+        if len(bases) != 1:
+            raise ValueError(f"a tabela do jr em 0x{address:08x} sumiu")
+
+        tables[address] = bases.pop()
+
+    return tables
+
+
+def find_callbacks(code, import_map):
+    instructions = sorted(code.items())
+    callbacks = set()
+
+    for index, (_, instruction) in enumerate(instructions):
+        if instruction[0] != "jal" or instruction[1] not in import_map:
+            continue
+
+        imported = import_map[instruction[1]]
+        if (imported["library"], imported["nid"]) != create_thread:
+            continue
+
+        callback = callback_value(instructions, index, 5)
+        if callback in code:
+            callbacks.add(callback)
+
+    return callbacks
+
+
 def find_functions(data, segments, entry, import_map, indirect_targets=()):
     functions = {}
     callbacks = set()
