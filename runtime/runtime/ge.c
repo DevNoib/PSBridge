@@ -558,41 +558,76 @@ static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
     return vertex;
 }
 
-static u32 sprite_color(GeVertex first, GeVertex second, int x, int y)
-{
-    float dx = second.x - first.x;
-    float dy = second.y - first.y;
-    float u = first.u;
-    float v = first.v;
-    u32 color = second.color;
-
-    if (dx != 0.0f)
-        u += (second.u - first.u) * (x - first.x) / dx;
-    if (dy != 0.0f)
-        v += (second.v - first.v) * (y - first.y) / dy;
-
-    if (
-        (state.command[GE_TEXTURE_ENABLE] & 1) &&
-        !(state.command[GE_CLEARMODE] & 1)
-    )
-        color = shade_pixel(texture_pixel((int)u, (int)v), color);
-
-    return color;
-}
-
 static void draw_sprite(GeVertex first, GeVertex second)
 {
     int left = (int)(first.x < second.x ? first.x : second.x);
     int top = (int)(first.y < second.y ? first.y : second.y);
     int right = (int)(first.x > second.x ? first.x : second.x);
     int bottom = (int)(first.y > second.y ? first.y : second.y);
+    int u_start;
+    int v_start;
+    int texture_on;
+    int du;
+    int dv;
+    int u;
+    int v;
     int x;
     int y;
+    u32 color;
+
+    if (right <= left || bottom <= top)
+        return;
+
+    texture_on = (state.command[GE_TEXTURE_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1);
+
+    du = (int) (
+        (second.u - first.u) * 65536.0f /
+        (second.x - first.x)
+    );
+
+    dv = (int) (
+        (second.v - first.v) * 65536.0f /
+        (second.y - first.y)
+    );
+
+    u_start = 
+        (int) (first.u * 65536.0f) +
+        (int) ((left - first.x) * du);
+
+    v_start = 
+        (int) (first.v * 65536.0f) +
+        (int) ((top - first.y) * dv);
+
+    v = v_start;
 
     for (y = top; y < bottom; y++) {
-        for (x = left; x < right; x++)
-            draw_pixel(x, y, sprite_color(first, second, x, y));
+        u = u_start;
+
+        for (x = left; x < right; x++) {
+            color = second.color;
+
+            if (texture_on) {
+                color = shade_pixel(
+                texture_pixel(u >> 16, v >> 16),
+                color
+            );
+
+          }
+
+
+        draw_pixel(x, y, color);
+        u += du;
+            
+        }
+
+        v += dv;
+
+    
     }
+
+
+
+
 }
 
 static float edge(GeVertex a, GeVertex b, float x, float y)

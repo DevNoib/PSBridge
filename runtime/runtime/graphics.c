@@ -203,11 +203,11 @@ static void present(void)
         gs,
         &frame_texture,
         0.0f,
-        42.0f,
+        0.0f,
         0.0f,
         0.0f,
         640.0f,
-        405.0f,
+        448.0f,
         PSP_WIDTH,
         PSP_HEIGHT,
         1,
@@ -230,7 +230,6 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
         framebuffer = (const void *)a0;
         framebuffer_width = a1;
         framebuffer_format = a2;
-        present();
         return 0;
     }
 
