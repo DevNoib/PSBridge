@@ -1,0 +1,892 @@
+//é aqui que toda magia negra acontece ops quero dizer magia branca
+//demorou pra caralho 1 hora pra escrever 1000 linhas to fudido
+
+#include <stdint.h>
+#include <string.h>
+
+#include "psbridge.h"
+
+#define GE_LIST_LIMIT 16
+#define GE_STACK_LIMIT 8
+#define GE_COMMAND_LIMIT 200000
+
+#define GE_VADDR 0x01
+#define GE_IADDR 0x02
+#define GE_PRIM 0x04
+#define GE_JUMP 0x08
+#define GE_CALL 0x0a
+#define GE_RET 0x0b
+#define GE_END 0x0c
+#define GE_BASE 0x10
+#define GE_VERTEXTYPE 0x12
+#define GE_OFFSETADDR 0x13
+#define GE_ORIGIN 0x14
+#define GE_TEXTURE_ENABLE 0x1e
+#define GE_BLEND_ENABLE 0x21
+#define GE_ALPHA_TEST_ENABLE 0x22
+#define GE_VADDR_BASE 0x9c
+#define GE_VADDR_WIDTH 0x9d
+#define GE_TEXADDR0 0xa0
+#define GE_TEXBUFWIDTH0 0xa8
+#define GE_CLUTADDR 0xb0
+#define GE_CLUTADDRUPPER 0xb1
+#define GE_TRANSFERSRC 0xb2
+#define GE_TRANSFERSRCW 0xb3
+#define GE_TRANSFERDST 0xb4
+#define GE_TRANSFERDSTW 0xb5
+#define GE_TEXSIZE0 0xb8
+#define GE_TEXMODE 0xc2
+#define GE_TEXFORMAT 0xc3
+#define GE_CLUTFORMAT 0xc5
+#define GE_TEXWRAP 0xc7
+#define GE_TEXFUNC 0xc9
+#define GE_FRAMEBUF_FORMAT 0xd2
+#define GE_CLEARMODE 0xd3
+#define GE_SCISSOR1 0xd4
+#define GE_SCISSOR2 0xd5
+#define GE_ALPHATEST 0xdb
+#define GE_TRANSFERSTART 0xea
+#define GE_TRANSFERSRCPOS 0xeb
+#define GE_TRANSFERDSTPOS 0xec
+#define GE_TRANSFERSIZE 0xee
+
+typedef struct {
+    int used;
+    int id;
+    int done;
+    u32 pc;
+    u32 stall;
+    u32 stack[GE_STACK_LIMIT];
+    u32 stack_offset[GE_STACK_LIMIT];
+    int stack_size;
+} GeList;
+
+typedef struct {
+    u32 command[256];
+    u32 vertex_address;
+    u32 index_address;
+    u32 offset_address;
+} GeState;
+
+typedef struct {
+    float x;
+    float y;
+    float u;
+    float v;
+    u32 color;
+} GeVertex;
+
+typedef struct {
+    int weight;
+    int texture;
+    int color;
+    int normal;
+    int position;
+    int stride;
+} VertexLayout;
+
+static GeList lists[GE_LIST_LIMIT];
+static GeState state;
+static int next_list_id = 1;
+static int next_callback_id = 1;
+
+static int align_value(int value, int alignment)
+{
+    if (alignment <= 1)
+        return value;
+
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+static void *ge_pointer(u32 address)
+{
+    u32 video = (u32)(uintptr_t)psbridge_video_memory();
+
+    address &= 0x3fffffff;
+
+    if (address >= 0x04000000 && address < 0x04200000)
+        return (u8 *)psbridge_video_memory() + address - 0x04000000;
+
+    if (address < 0x00200000)
+        return (u8 *)psbridge_video_memory() + address;
+
+    if (address >= video && address < video + 0x00200000)
+        return (void *)(uintptr_t)address;
+
+    return psbridge_game_pointer((void *)(uintptr_t)address);
+}
+
+static u32 relative_address(u32 value)
+{
+    u32 base = (state.command[GE_BASE] & 0x000f0000) << 8;
+
+    return (state.offset_address + base + (value & 0x00ffffff)) & 0x0fffffff;
+}
+
+static u32 buffer_address(int address_command, int width_command)
+{
+    return
+        (state.command[address_command] & 0x00fffff0) |
+        ((state.command[width_command] << 8) & 0x0f000000);
+}
+
+static u32 unpack_color(u16 color, int format)
+{
+    u32 red;
+    u32 green;
+    u32 blue;
+    u32 alpha;
+
+    if (format == 0) {
+        red = (color & 0x1f) * 255 / 31;
+        green = ((color >> 5) & 0x3f) * 255 / 63;
+        blue = ((color >> 11) & 0x1f) * 255 / 31;
+        alpha = 255;
+    } else if (format == 1) {
+        red = (color & 0x1f) * 255 / 31;
+        green = ((color >> 5) & 0x1f) * 255 / 31;
+        blue = ((color >> 10) & 0x1f) * 255 / 31;
+        alpha = (color & 0x8000) ? 255 : 0;
+    } else {
+        red = (color & 0x0f) * 17;
+        green = ((color >> 4) & 0x0f) * 17;
+        blue = ((color >> 8) & 0x0f) * 17;
+        alpha = ((color >> 12) & 0x0f) * 17;
+    }
+
+    return red | (green << 8) | (blue << 16) | (alpha << 24);
+}
+
+static u16 pack_color(u32 color, int format)
+{
+    u32 red = color & 0xff;
+    u32 green = (color >> 8) & 0xff;
+    u32 blue = (color >> 16) & 0xff;
+    u32 alpha = color >> 24;
+
+    if (format == 0)
+        return (red >> 3) | ((green >> 2) << 5) | ((blue >> 3) << 11);
+
+    if (format == 1)
+        return
+            (red >> 3) |
+            ((green >> 3) << 5) |
+            ((blue >> 3) << 10) |
+            ((alpha >= 0x80) << 15);
+
+    return
+        (red >> 4) |
+        ((green >> 4) << 4) |
+        ((blue >> 4) << 8) |
+        ((alpha >> 4) << 12);
+}
+
+static u32 read_frame_pixel(const void *buffer, int index, int format)
+{
+    if (format == 3)
+        return ((const u32 *)buffer)[index];
+
+    return unpack_color(((const u16 *)buffer)[index], format);
+}
+
+static void write_frame_pixel(void *buffer, int index, int format, u32 color)
+{
+    if (format == 3)
+        ((u32 *)buffer)[index] = color;
+    else
+        ((u16 *)buffer)[index] = pack_color(color, format);
+}
+
+static int compare_alpha(int function, int value, int reference)
+{
+    if (function == 0)
+        return 0;
+    if (function == 1)
+        return 1;
+    if (function == 2)
+        return value == reference;
+    if (function == 3)
+        return value != reference;
+    if (function == 4)
+        return value < reference;
+    if (function == 5)
+        return value <= reference;
+    if (function == 6)
+        return value > reference;
+
+    return value >= reference;
+}
+
+static u32 blend_color(u32 source, u32 destination)
+{
+    u32 alpha = source >> 24;
+    u32 inverse = 255 - alpha;
+    u32 red;
+    u32 green;
+    u32 blue;
+    u32 output_alpha;
+
+    red = ((source & 0xff) * alpha + (destination & 0xff) * inverse) / 255;
+    green = (((source >> 8) & 0xff) * alpha + ((destination >> 8) & 0xff) * inverse) / 255;
+    blue = (((source >> 16) & 0xff) * alpha + ((destination >> 16) & 0xff) * inverse) / 255;
+    output_alpha = alpha + ((destination >> 24) * inverse) / 255;
+
+    return red | (green << 8) | (blue << 16) | (output_alpha << 24);
+}
+
+static int pixel_offset(int x, int y, int row_bytes, int bytes, int swizzled)
+{
+    int byte_x = x * bytes;
+
+    if (!swizzled)
+        return y * row_bytes + byte_x;
+
+    return
+        ((y >> 3) * ((row_bytes + 15) >> 4) + (byte_x >> 4)) * 128 +
+        (y & 7) * 16 +
+        (byte_x & 15);
+}
+
+static u32 palette_color(u32 index)
+{
+    u32 format = state.command[GE_CLUTFORMAT] & 3;
+    u32 shift = (state.command[GE_CLUTFORMAT] >> 2) & 0x1f;
+    u32 mask = (state.command[GE_CLUTFORMAT] >> 8) & 0xff;
+    u32 start = ((state.command[GE_CLUTFORMAT] >> 16) & 0x1f) << 4;
+    u32 address;
+    const void *palette;
+
+    index = ((index >> shift) & mask) | start;
+    address =
+        (state.command[GE_CLUTADDR] & 0x00fffff0) |
+        ((state.command[GE_CLUTADDRUPPER] << 8) & 0x0f000000);
+    palette = ge_pointer(address);
+
+    if (!palette)
+        return 0;
+
+    if (format == 3)
+        return ((const u32 *)palette)[index & 0xff];
+
+    return unpack_color(((const u16 *)palette)[index & 0x1ff], format);
+}
+
+static u32 texture_pixel(int x, int y)
+{
+    int format = state.command[GE_TEXFORMAT] & 0xf;
+    int width = 1 << (state.command[GE_TEXSIZE0] & 0xf);
+    int height = 1 << ((state.command[GE_TEXSIZE0] >> 8) & 0xf);
+    int buffer_width = state.command[GE_TEXBUFWIDTH0] & 0x7ff;
+    int swizzled = state.command[GE_TEXMODE] & 1;
+    int clamp_x = state.command[GE_TEXWRAP] & 1;
+    int clamp_y = (state.command[GE_TEXWRAP] >> 8) & 1;
+    const u8 *texture = ge_pointer(buffer_address(GE_TEXADDR0, GE_TEXBUFWIDTH0));
+    int offset;
+
+    if (!texture || !width || !height)
+        return 0;
+
+    if (clamp_x) {
+        if (x < 0)
+            x = 0;
+        if (x >= width)
+            x = width - 1;
+    } else {
+        x %= width;
+        if (x < 0)
+            x += width;
+    }
+
+    if (clamp_y) {
+        if (y < 0)
+            y = 0;
+        if (y >= height)
+            y = height - 1;
+    } else {
+        y %= height;
+        if (y < 0)
+            y += height;
+    }
+
+    if (!buffer_width)
+        buffer_width = width;
+
+    if (format <= 2) {
+        offset = pixel_offset(x, y, buffer_width * 2, 2, swizzled);
+        return unpack_color(*(const u16 *)(texture + offset), format);
+    }
+
+    if (format == 3) {
+        offset = pixel_offset(x, y, buffer_width * 4, 4, swizzled);
+        return *(const u32 *)(texture + offset);
+    }
+
+    if (format == 4) {
+        int byte_x = x >> 1;
+
+        if (swizzled)
+            offset = pixel_offset(byte_x, y, (buffer_width + 1) >> 1, 1, 1);
+        else
+            offset = y * ((buffer_width + 1) >> 1) + byte_x;
+
+        if (x & 1)
+            return palette_color(texture[offset] >> 4);
+
+        return palette_color(texture[offset] & 0x0f);
+    }
+
+    if (format == 5) {
+        offset = pixel_offset(x, y, buffer_width, 1, swizzled);
+        return palette_color(texture[offset]);
+    }
+
+    if (format == 6) {
+        offset = pixel_offset(x, y, buffer_width * 2, 2, swizzled);
+        return palette_color(*(const u16 *)(texture + offset));
+    }
+
+    if (format == 7) {
+        offset = pixel_offset(x, y, buffer_width * 4, 4, swizzled);
+        return palette_color(*(const u32 *)(texture + offset));
+    }
+
+    return 0;
+}
+
+static u32 shade_pixel(u32 texture, u32 vertex)
+{
+    int function = state.command[GE_TEXFUNC] & 7;
+    int use_alpha = state.command[GE_TEXFUNC] & 0x100;
+    u32 red;
+    u32 green;
+    u32 blue;
+    u32 alpha;
+
+    if (!use_alpha)
+        texture |= 0xff000000;
+
+    if (function == 3)
+        return texture;
+
+    red = (texture & 0xff) * (vertex & 0xff) / 255;
+    green = ((texture >> 8) & 0xff) * ((vertex >> 8) & 0xff) / 255;
+    blue = ((texture >> 16) & 0xff) * ((vertex >> 16) & 0xff) / 255;
+    alpha = (texture >> 24) * (vertex >> 24) / 255;
+
+    return red | (green << 8) | (blue << 16) | (alpha << 24);
+}
+
+static void draw_pixel(int x, int y, u32 color)
+{
+    int width = state.command[GE_VADDR_WIDTH] & 0x7fc;
+    int format = state.command[GE_FRAMEBUF_FORMAT] & 3;
+    int left = state.command[GE_SCISSOR1] & 0x3ff;
+    int top = (state.command[GE_SCISSOR1] >> 10) & 0x3ff;
+    int right = state.command[GE_SCISSOR2] & 0x3ff;
+    int bottom = (state.command[GE_SCISSOR2] >> 10) & 0x3ff;
+    void *frame = ge_pointer(buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH));
+    int index;
+    u32 alpha_command;
+    u32 destination;
+
+    if (!frame || width < 64 || width > 2048)
+        return;
+
+    if (!state.command[GE_SCISSOR2]) {
+        right = 479;
+        bottom = 271;
+    }
+
+    if (x < left || y < top || x > right || y > bottom)
+        return;
+
+    if (x < 0 || y < 0 || x >= width || y >= 512)
+        return;
+
+    if ((state.command[GE_ALPHA_TEST_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1)) {
+        alpha_command = state.command[GE_ALPHATEST];
+
+        if (!compare_alpha(
+            alpha_command & 7,
+            (color >> 24) & ((alpha_command >> 16) & 0xff),
+            (alpha_command >> 8) & ((alpha_command >> 16) & 0xff)
+        ))
+            return;
+    }
+
+    index = y * width + x;
+
+    if ((state.command[GE_BLEND_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1)) {
+        destination = read_frame_pixel(frame, index, format);
+        color = blend_color(color, destination);
+    }
+
+    write_frame_pixel(frame, index, format, color);
+}
+
+static VertexLayout vertex_layout(u32 type)
+{
+    static const int texture_size[] = {0, 2, 4, 8};
+    static const int texture_align[] = {1, 1, 2, 4};
+    static const int color_size[] = {0, 0, 0, 0, 2, 2, 2, 4};
+    static const int color_align[] = {1, 1, 1, 1, 2, 2, 2, 4};
+    static const int normal_size[] = {0, 3, 6, 12};
+    static const int normal_align[] = {1, 1, 2, 4};
+    static const int position_size[] = {3, 3, 6, 12};
+    static const int position_align[] = {1, 1, 2, 4};
+    static const int weight_size[] = {0, 1, 2, 4};
+    static const int weight_align[] = {1, 1, 2, 4};
+    VertexLayout layout;
+    int texture = type & 3;
+    int color = (type >> 2) & 7;
+    int normal = (type >> 5) & 3;
+    int position = (type >> 7) & 3;
+    int weight = (type >> 9) & 3;
+    int weight_count = ((type >> 14) & 7) + 1;
+    int morph_count = ((type >> 18) & 7) + 1;
+    int size = 0;
+    int biggest = 1;
+
+    memset(&layout, 0, sizeof(layout));
+
+    if (weight) {
+        layout.weight = size;
+        size += weight_size[weight] * weight_count;
+        biggest = weight_align[weight];
+    }
+
+    if (texture) {
+        size = align_value(size, texture_align[texture]);
+        layout.texture = size;
+        size += texture_size[texture];
+        if (texture_align[texture] > biggest)
+            biggest = texture_align[texture];
+    } else {
+        layout.texture = -1;
+    }
+
+    if (color) {
+        size = align_value(size, color_align[color]);
+        layout.color = size;
+        size += color_size[color];
+        if (color_align[color] > biggest)
+            biggest = color_align[color];
+    } else {
+        layout.color = -1;
+    }
+
+    if (normal) {
+        size = align_value(size, normal_align[normal]);
+        layout.normal = size;
+        size += normal_size[normal];
+        if (normal_align[normal] > biggest)
+            biggest = normal_align[normal];
+    }
+
+    size = align_value(size, position_align[position]);
+    layout.position = size;
+    size += position_size[position];
+
+    if (position_align[position] > biggest)
+        biggest = position_align[position];
+
+    layout.stride = align_value(size, biggest) * morph_count;
+    return layout;
+}
+
+static u32 vertex_index(int number, u32 type)
+{
+    int index_type = (type >> 11) & 3;
+    const void *indices = ge_pointer(state.index_address);
+
+    if (!index_type || !indices)
+        return number;
+
+    if (index_type == 1)
+        return ((const u8 *)indices)[number];
+
+    if (index_type == 2)
+        return ((const u16 *)indices)[number];
+
+    return ((const u32 *)indices)[number] & 0xffff;
+}
+
+static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
+{
+    int texture = type & 3;
+    int color = (type >> 2) & 7;
+    int position = (type >> 7) & 3;
+    u32 index = vertex_index(number, type);
+    const u8 *data = ge_pointer(state.vertex_address);
+    GeVertex vertex;
+
+    memset(&vertex, 0, sizeof(vertex));
+    vertex.color = 0xffffffff;
+
+    if (!data)
+        return vertex;
+
+    data += index * layout.stride;
+
+    if (texture == 1) {
+        vertex.u = data[layout.texture];
+        vertex.v = data[layout.texture + 1];
+    } else if (texture == 2) {
+        vertex.u = *(const u16 *)(data + layout.texture);
+        vertex.v = *(const u16 *)(data + layout.texture + 2);
+    } else if (texture == 3) {
+        vertex.u = *(const float *)(data + layout.texture);
+        vertex.v = *(const float *)(data + layout.texture + 4);
+    }
+
+    if (color >= 4 && color <= 6)
+        vertex.color = unpack_color(*(const u16 *)(data + layout.color), color - 4);
+    else if (color == 7)
+        vertex.color = *(const u32 *)(data + layout.color);
+
+    if (position == 1) {
+        vertex.x = *(const s8 *)(data + layout.position);
+        vertex.y = *(const s8 *)(data + layout.position + 1);
+    } else if (position == 2) {
+        vertex.x = *(const s16 *)(data + layout.position);
+        vertex.y = *(const s16 *)(data + layout.position + 2);
+    } else if (position == 3) {
+        vertex.x = *(const float *)(data + layout.position);
+        vertex.y = *(const float *)(data + layout.position + 4);
+    }
+
+    return vertex;
+}
+
+static u32 sprite_color(GeVertex first, GeVertex second, int x, int y)
+{
+    float dx = second.x - first.x;
+    float dy = second.y - first.y;
+    float u = first.u;
+    float v = first.v;
+    u32 color = second.color;
+
+    if (dx != 0.0f)
+        u += (second.u - first.u) * (x - first.x) / dx;
+    if (dy != 0.0f)
+        v += (second.v - first.v) * (y - first.y) / dy;
+
+    if (
+        (state.command[GE_TEXTURE_ENABLE] & 1) &&
+        !(state.command[GE_CLEARMODE] & 1)
+    )
+        color = shade_pixel(texture_pixel((int)u, (int)v), color);
+
+    return color;
+}
+
+static void draw_sprite(GeVertex first, GeVertex second)
+{
+    int left = (int)(first.x < second.x ? first.x : second.x);
+    int top = (int)(first.y < second.y ? first.y : second.y);
+    int right = (int)(first.x > second.x ? first.x : second.x);
+    int bottom = (int)(first.y > second.y ? first.y : second.y);
+    int x;
+    int y;
+
+    for (y = top; y < bottom; y++) {
+        for (x = left; x < right; x++)
+            draw_pixel(x, y, sprite_color(first, second, x, y));
+    }
+}
+
+static float edge(GeVertex a, GeVertex b, float x, float y)
+{
+    return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
+}
+
+static u32 mix_color(u32 a, u32 b, u32 c, float wa, float wb, float wc)
+{
+    int red = (int)((a & 0xff) * wa + (b & 0xff) * wb + (c & 0xff) * wc);
+    int green = (int)(((a >> 8) & 0xff) * wa + ((b >> 8) & 0xff) * wb + ((c >> 8) & 0xff) * wc);
+    int blue = (int)(((a >> 16) & 0xff) * wa + ((b >> 16) & 0xff) * wb + ((c >> 16) & 0xff) * wc);
+    int alpha = (int)((a >> 24) * wa + (b >> 24) * wb + (c >> 24) * wc);
+
+    return red | (green << 8) | (blue << 16) | (alpha << 24);
+}
+
+static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
+{
+    float area = edge(a, b, c.x, c.y);
+    int left = (int)a.x;
+    int top = (int)a.y;
+    int right = (int)a.x;
+    int bottom = (int)a.y;
+    int x;
+    int y;
+
+    if (area == 0.0f)
+        return;
+
+    if (b.x < left)
+        left = (int)b.x;
+    if (c.x < left)
+        left = (int)c.x;
+    if (b.y < top)
+        top = (int)b.y;
+    if (c.y < top)
+        top = (int)c.y;
+    if (b.x > right)
+        right = (int)b.x;
+    if (c.x > right)
+        right = (int)c.x;
+    if (b.y > bottom)
+        bottom = (int)b.y;
+    if (c.y > bottom)
+        bottom = (int)c.y;
+
+    for (y = top; y <= bottom; y++) {
+        for (x = left; x <= right; x++) {
+            float wa = edge(b, c, x + 0.5f, y + 0.5f) / area;
+            float wb = edge(c, a, x + 0.5f, y + 0.5f) / area;
+            float wc = 1.0f - wa - wb;
+            u32 color;
+
+            if (wa < 0.0f || wb < 0.0f || wc < 0.0f)
+                continue;
+
+            color = mix_color(a.color, b.color, c.color, wa, wb, wc);
+
+            if (
+                (state.command[GE_TEXTURE_ENABLE] & 1) &&
+                !(state.command[GE_CLEARMODE] & 1)
+            ) {
+                float u = a.u * wa + b.u * wb + c.u * wc;
+                float v = a.v * wa + b.v * wb + c.v * wc;
+
+                color = shade_pixel(texture_pixel((int)u, (int)v), color);
+            }
+
+            draw_pixel(x, y, color);
+        }
+    }
+}
+
+static void draw_primitive(u32 argument)
+{
+    u32 type = state.command[GE_VERTEXTYPE];
+    int primitive = argument >> 16;
+    int count = argument & 0xffff;
+    VertexLayout layout;
+    int index;
+
+    if (!(type & (1 << 23)) || count <= 0)
+        return;
+
+    layout = vertex_layout(type);
+
+    if (primitive == 6) {
+        for (index = 0; index + 1 < count; index += 2)
+            draw_sprite(
+                read_vertex(index, type, layout),
+                read_vertex(index + 1, type, layout)
+            );
+        return;
+    }
+
+    if (primitive == 3) {
+        for (index = 0; index + 2 < count; index += 3)
+            draw_triangle(
+                read_vertex(index, type, layout),
+                read_vertex(index + 1, type, layout),
+                read_vertex(index + 2, type, layout)
+            );
+        return;
+    }
+
+    if (primitive == 4) {
+        for (index = 0; index + 2 < count; index++)
+            draw_triangle(
+                read_vertex(index, type, layout),
+                read_vertex(index + 1, type, layout),
+                read_vertex(index + 2, type, layout)
+            );
+        return;
+    }
+
+    if (primitive == 5) {
+        GeVertex first = read_vertex(0, type, layout);
+
+        for (index = 1; index + 1 < count; index++)
+            draw_triangle(
+                first,
+                read_vertex(index, type, layout),
+                read_vertex(index + 1, type, layout)
+            );
+    }
+}
+
+static void transfer_pixels(void)
+{
+    int source_width = state.command[GE_TRANSFERSRCW] & 0x7f8;
+    int destination_width = state.command[GE_TRANSFERDSTW] & 0x7f8;
+    int source_x = state.command[GE_TRANSFERSRCPOS] & 0x3ff;
+    int source_y = (state.command[GE_TRANSFERSRCPOS] >> 10) & 0x3ff;
+    int destination_x = state.command[GE_TRANSFERDSTPOS] & 0x3ff;
+    int destination_y = (state.command[GE_TRANSFERDSTPOS] >> 10) & 0x3ff;
+    int width = (state.command[GE_TRANSFERSIZE] & 0x3ff) + 1;
+    int height = ((state.command[GE_TRANSFERSIZE] >> 10) & 0x3ff) + 1;
+    int bytes = (state.command[GE_TRANSFERSTART] & 1) ? 4 : 2;
+    const u8 *source = ge_pointer(buffer_address(GE_TRANSFERSRC, GE_TRANSFERSRCW));
+    u8 *destination = ge_pointer(buffer_address(GE_TRANSFERDST, GE_TRANSFERDSTW));
+    int y;
+
+    if (!source || !destination || !source_width || !destination_width)
+        return;
+
+    for (y = 0; y < height; y++) {
+        memcpy(
+            destination + ((destination_y + y) * destination_width + destination_x) * bytes,
+            source + ((source_y + y) * source_width + source_x) * bytes,
+            width * bytes
+        );
+    }
+}
+
+static GeList *find_list(int id)
+{
+    int index;
+
+    for (index = 0; index < GE_LIST_LIMIT; index++) {
+        if (lists[index].used && lists[index].id == id)
+            return &lists[index];
+    }
+
+    return NULL;
+}
+
+static void execute_list(GeList *list)
+{
+    int commands = 0;
+
+    while (!list->done && commands++ < GE_COMMAND_LIMIT) {
+        const u32 *instruction;
+        u32 word;
+        u32 command;
+        u32 argument;
+
+        if (list->stall && list->pc == list->stall)
+            break;
+
+        instruction = ge_pointer(list->pc);
+
+        if (!instruction) {
+            list->done = 1;
+            break;
+        }
+
+        word = *instruction;
+        command = word >> 24;
+        argument = word & 0x00ffffff;
+        list->pc += 4;
+        state.command[command] = argument;
+
+        if (command == GE_VADDR)
+            state.vertex_address = relative_address(argument);
+        else if (command == GE_IADDR)
+            state.index_address = relative_address(argument);
+        else if (command == GE_OFFSETADDR)
+            state.offset_address = argument << 8;
+        else if (command == GE_ORIGIN)
+            state.offset_address = list->pc - 4;
+        else if (command == GE_PRIM)
+            draw_primitive(argument);
+        else if (command == GE_TRANSFERSTART)
+            transfer_pixels();
+        else if (command == GE_JUMP)
+            list->pc = relative_address(argument & 0x00fffffc);
+        else if (command == GE_CALL && list->stack_size < GE_STACK_LIMIT) {
+            list->stack[list->stack_size] = list->pc;
+            list->stack_offset[list->stack_size] = state.offset_address;
+            list->stack_size++;
+            list->pc = relative_address(argument & 0x00fffffc);
+        } else if (command == GE_RET && list->stack_size > 0) {
+            list->stack_size--;
+            list->pc = list->stack[list->stack_size];
+            state.offset_address = list->stack_offset[list->stack_size];
+        } else if (command == GE_END) {
+            list->done = 1;
+        }
+    }
+}
+
+static int enqueue_list(u32 address, u32 stall)
+{
+    GeList *list = NULL;
+    int index;
+
+    for (index = 0; index < GE_LIST_LIMIT; index++) {
+        if (!lists[index].used || lists[index].done) {
+            list = &lists[index];
+            break;
+        }
+    }
+
+    if (!list)
+        return -1;
+
+    memset(list, 0, sizeof(*list));
+    list->used = 1;
+    list->id = next_list_id++;
+    list->pc = address & 0x3fffffff;
+    list->stall = stall & 0x3fffffff;
+    execute_list(list);
+    return list->id;
+}
+
+u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
+{
+    GeList *list;
+    int index;
+
+    if (nid == 0xe47e40e4)
+        return (u32)(uintptr_t)psbridge_video_memory();
+
+    if (nid == 0xa4fc06a4)
+        return next_callback_id++;
+
+    if (nid == 0x05db22ce)
+        return 0;
+
+    if (nid == 0xab49e76a || nid == 0x1c0d95a6)
+        return enqueue_list(a0, a1);
+
+    if (nid == 0xe0d68148) {
+        list = find_list((int)a0);
+
+        if (!list)
+            return -1;
+
+        list->stall = a1 & 0x3fffffff;
+        execute_list(list);
+        return 0;
+    }
+
+    if (nid == 0x03444eb4) {
+        list = find_list((int)a0);
+
+        if (!list)
+            return -1;
+
+        execute_list(list);
+        return list->done ? 0 : 3;
+    }
+
+    if (nid == 0xb287bd61) {
+        for (index = 0; index < GE_LIST_LIMIT; index++) {
+            if (lists[index].used)
+                execute_list(&lists[index]);
+        }
+
+        return 0;
+    }
+
+    (void)a2;
+    (void)a3;
+    return 0;
+}

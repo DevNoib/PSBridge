@@ -8,38 +8,6 @@
 
 static int next_callback_uid = 0x1800;
 static int next_event_uid = 0x2000;
-static const PspImport *seen_imports[128];
-static u32 seen_import_count;
-static u32 import_calls;
-static u32 next_heartbeat = 10000;
-
-static void trace_import(const PspImport *import)
-{
-    u32 index;
-
-    import_calls++;
-
-    for (index = 0; index < seen_import_count; index++) {
-        if (seen_imports[index] == import)
-            goto heartbeat;
-    }
-
-    if (seen_import_count < 128)
-        seen_imports[seen_import_count++] = import;
-
-    scr_printf("rodando %s 0x%08x\n", import->library, import->nid);
-
-heartbeat:
-    if (import_calls == next_heartbeat) {
-        scr_printf(
-            "jogo vivo %u ultimo %s 0x%08x\n",
-            import_calls,
-            import->library,
-            import->nid
-        );
-        next_heartbeat += 10000;
-    }
-}
 
 static u64 system_time(void)
 {
@@ -58,7 +26,6 @@ static u64 system_time(void)
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a5;
-    trace_import(import);
 
     if (!strcmp(import->library, "SysMemUserForUser")) {
         if (
@@ -149,7 +116,7 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         return 0;
 
     if (!strcmp(import->library, "sceDisplay"))
-        return 0;
+        return psbridge_display(import->nid, a0, a1, a2, a3);
 
     if (!strcmp(import->library, "sceCtrl")) {
         if (
@@ -166,12 +133,8 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
     if (!strcmp(import->library, "sceUtility"))
         return psbridge_utility(import->nid, (void *)a0);
 
-    if (!strcmp(import->library, "sceGe_user")) {
-        if (import->nid == 0xe47e40e4)
-            return (u32)(uintptr_t)psbridge_video_memory();
-
-        return 0;
-    }
+    if (!strcmp(import->library, "sceGe_user"))
+        return psbridge_ge(import->nid, a0, a1, a2, a3);
 
     if (!strcmp(import->library, "ThreadManForUser")) {
         if (import->nid == 0xe81caf8f)

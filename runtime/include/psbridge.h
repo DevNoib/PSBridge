@@ -27,6 +27,8 @@ void *psbridge_game_pointer(const void *pointer);
 void *psbridge_video_memory(void);
 int psbridge_controller_read(void *output, int count);
 int psbridge_utility(u32 nid, void *argument);
+u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3);
+u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3);
 
 int psbridge_alloc_partition(int partition, const char *name, int type,u32 size,void *address);
 
