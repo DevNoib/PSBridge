@@ -23,11 +23,25 @@ static u64 system_time(void)
     return (u64)seconds * 1000000 + microseconds;
 }
 
+#define LIB_DISPLAY 0x1cebc208
+#define LIB_SYSMEM 0x1902db0c
+#define LIB_IO 0x67e92fd1
+#define LIB_KERNEL 0xff65d9d0
+#define LIB_AUDIO 0xf41677cc
+#define LIB_CTRL 0x6e7a8e3b
+#define LIB_UTILITY  0x241c3336
+#define LIB_GE 0x412aa1a0
+#define LIB_THREADMAN 0x9aacf809
+#define LIB_UTILS 0xa8587892
+#define LIB_UMD 0x964db0c7
+#define LIB_POWER 0x892fba53
+#define LIB_LOADEXEC 0xc469257c
+
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a5;
 
-    if (!strcmp(import->library, "SysMemUserForUser")) {
+    if (import->library == LIB_SYSMEM) {
         if (
             import->nid == 0x35669d4c ||
             import->nid == 0xf77d77cb
@@ -51,7 +65,7 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return psbridge_free_partition((int)a0);
     }
 
-    if (!strcmp(import->library, "IoFileMgrForUser")) {
+    if (import->library == LIB_IO) {
         if (import->nid == 0x109f50bc)
             return psbridge_file_open((const char *)a0, (int)a1, (int)a2);
 
@@ -77,7 +91,7 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return psbridge_file_rename((const char *)a0, (const char *)a1);
     }
 
-    if (!strcmp(import->library, "Kernel_Library")) {
+    if (import->library == LIB_KERNEL) {
         if (import->nid == 0x092968f4)
             return 1;
 
@@ -112,13 +126,13 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         }
     }
 
-    if (!strcmp(import->library, "sceAudio"))
+    if (import->library == LIB_AUDIO)
         return 0;
 
-    if (!strcmp(import->library, "sceDisplay"))
+    if (import->library == LIB_DISPLAY)
         return psbridge_display(import->nid, a0, a1, a2, a3);
 
-    if (!strcmp(import->library, "sceCtrl")) {
+    if (import->library == LIB_CTRL) {
         if (
             import->nid == 0x1f803938 ||
             import->nid == 0x3a622550 ||
@@ -130,13 +144,13 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         return 0;
     }
 
-    if (!strcmp(import->library, "sceUtility"))
+    if (import->library == LIB_UTILITY)
         return psbridge_utility(import->nid, (void *)a0);
 
-    if (!strcmp(import->library, "sceGe_user"))
+    if (import->library == LIB_GE)
         return psbridge_ge(import->nid, a0, a1, a2, a3);
 
-    if (!strcmp(import->library, "ThreadManForUser")) {
+    if (import->library == LIB_THREADMAN) {
         if (import->nid == 0xe81caf8f)
             return next_callback_uid++;
 
@@ -199,13 +213,13 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return system_time();
     }
 
-    if (!strcmp(import->library, "LoadExecForUser") && import->nid == 0x4ac57943)
+    if (import->library == LIB_LOADEXEC && import->nid == 0x4ac57943)
         return 0;
 
-    if (!strcmp(import->library, "scePower") && import->nid == 0x04b7766e)
+    if (import->library == LIB_POWER && import->nid == 0x04b7766e)
         return 0;
 
-    if (!strcmp(import->library, "UtilsForUser")) {
+    if (import->library == LIB_UTILS) {
         if (import->nid == 0x27cc57f0) {
             u32 *output = psbridge_game_pointer((void *)a0);
 
@@ -219,7 +233,7 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return 0;
     }
 
-    if (!strcmp(import->library, "sceUmdUser")) {
+    if (import->library == LIB_UMD) {
         if (import->nid == 0x46ebb729)
             return 1;
 
@@ -228,7 +242,7 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
     }
 
     scr_printf(
-        "import sem runtime %s 0x%08x\n",
+        "import sem runtime lib 0x%08x nid 0x%08x\n",
         import->library,
         import->nid
     );

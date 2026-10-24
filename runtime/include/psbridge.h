@@ -13,7 +13,7 @@ typedef struct {
 
 typedef struct {
     u32 nid;
-    const char *library;
+    u32 library;
     u32 stub;
     const void *wrapper;
 } PspImport;

@@ -12,6 +12,15 @@ def import_symbol(item) :
 
     return f"psp_{library}_{item['nid']:08x}"
 
+def library_id(name):
+    value = 2166136261
+
+    for byte in name.encode("ascii"):
+        value ^= byte
+        value = value * 16777619 & 0xffffffff
+
+    return value
+
 def link_imports(lines, imports):
     variables = [item for item in imports if item ["kind"] == "variable"]
 
@@ -69,7 +78,7 @@ def link_imports(lines, imports):
         lines.extend([
             f"psp_import_{index}:",
             f".word 0x{item['nid']:08x}",
-            f".word {libraries[item ['library']]}",
+            f".word 0x{library_id(item ['library']):08x}",
             f".word 0x{item['stub']:08x}",
             f".word {import_symbol(item)}",
         ])
