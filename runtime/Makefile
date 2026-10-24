@@ -1,5 +1,5 @@
 EE_BIN = ../build/psbridge.elf
-EE_OBJS = main.o guest.o ../build/game.o
+EE_OBJS = main.o memory.o imports.o guest.o threadman.o ../build/game.o
 EE_LIBS = -ldebug -lc
 EE_LDFLAGS = -Wl,-T$(CURDIR)/guest.ld
 EE_ASFLAGS += -I$(abspath ..)
@@ -13,7 +13,7 @@ all: $(EE_BIN)
 	cd .. && $(EE_AS) $(EE_ASFLAGS) -call_nonpic -msingle-float build/game.s -o build/game.o
 
 clean:
-	rm -f $(EE_BIN) main.o guest.o
+	rm -f $(EE_BIN) main.o guest.o memory.o imports.o thread.o
 
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal

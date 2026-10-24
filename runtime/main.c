@@ -3,32 +3,9 @@
 #include <tamtypes.h>
 #include <string.h>
 #include <sifrpc.h>
+#include <psbridge.h>
 
-typedef struct {
-    void *memory;
-    u32 base;
-    u32 memory_size;
-    u32 file_size;
-    u32 gp;
-} GuestInfo;
-
-typedef struct {
-    u32 nid;
-    const char *library;
-    u32 stub;
-    const void *wrapper;
-} PspImport;
-
-extern const u32 psp_import_count;
-extern const GuestInfo guest_info;
-
-extern int psbridge_start(void);
-
-int psbridge_dispatch(const PspImport *import) 
-{
-    scr_printf("import sem runtime %s 0x%08x\n", import->library, import->nid);
-    return -1;
-}
+u32 main_kernel_work[0x100];
 
 int main(void) 
 {
