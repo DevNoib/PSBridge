@@ -7,7 +7,7 @@ RUNTIME_OBJS = $(MAIN_OBJ) $(CORE_OBJS) $(API_OBJS)
 
 EE_BIN = $(BUILD_DIR)/psbridge.elf
 EE_OBJS = $(RUNTIME_OBJS) $(BUILD_DIR)/game.o
-EE_LIBS = -L$(GSKIT)/lib -lgskit -ldmakit -ldebug -lc
+EE_LIBS = -L$(GSKIT)/lib -lgskit -ldmakit -ldebug -lc -lpad
 EE_INCS += -I$(CURDIR)/include -I$(GSKIT)/include
 EE_LDFLAGS = -Wl,-T$(CURDIR)/linker/guest.ld
 EE_ASFLAGS += -I$(abspath ..)
