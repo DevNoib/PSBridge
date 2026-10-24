@@ -56,14 +56,14 @@ psbridge_import:
     or $5, $4, $0
     or $4, $25, $0
 
-    lui $gp, %hi (_gp)
+    lui $gp, %hi(_gp)
     addiu $gp, $gp, %lo(_gp)
     jal psbridge_dispatch
     nop
 
     dsrl32 $3, $2, 0
-    dsll $3, $2, 0
-    dsrl32 $3, $2, 0
+    dsll32 $2, $2, 0
+    dsrl32 $2, $2, 0
 
     ld $gp, 16($sp)
     ld $27, 24($sp)
@@ -110,4 +110,3 @@ thread_gp_ready:
     jr $ra
     nop
     .end psbridge_call_thread
-

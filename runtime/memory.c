@@ -5,6 +5,7 @@
 #include <psbridge.h>
 
 #define HEAP_SIZE 0x1400000
+#define VIDEO_MEMORY_SIZE 0x200000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
 
@@ -25,9 +26,15 @@ typedef struct {
 } FixedPool;
 
 static unsigned char game_heap[HEAP_SIZE] __attribute__((aligned(64)));
+static unsigned char video_memory[VIDEO_MEMORY_SIZE] __attribute__((aligned(64)));
 static u32 heap_position;
 static MemoryBlock blocks[BLOCK_LIMIT];
 static FixedPool pools[FPL_LIMIT];
+
+void *psbridge_video_memory(void)
+{
+    return video_memory;
+}
 
 void *psbridge_game_pointer(const void *pointer) 
 {
@@ -149,7 +156,7 @@ int psbridge_create_fpl(const char *name, int partition, u32 attributes, u32 blo
         pools[index].block_size = block_size;
         pools[index].block_count = block_count;
         pools[index].used_blocks = 0;
-
+        return pools[index].uid;
     }
     
     return -1;
@@ -175,10 +182,9 @@ int psbridge_allocate_fpl(int uid, void **output)
             if (pool->used_blocks & (1u << block))
                 continue;
 
-                pool->used_blocks |= 1u << block;
-                *real_output = (u8 *)pool->address + block * pool->block_size;
-
-                return 0;
+            pool->used_blocks |= 1u << block;
+            *real_output = (u8 *)pool->address + block * pool->block_size;
+            return 0;
         }
     }
     return -1;
@@ -188,7 +194,7 @@ int psbridge_allocate_fpl(int uid, void **output)
 int psbridge_delete_fpl(int uid)
 {
     int index;
-    
+
     for (index = 0; index < FPL_LIMIT; index++) {
         if (pools[index].used && pools[index].uid == uid) {
             memset(&pools[index], 0, sizeof(pools[index]));
@@ -196,5 +202,5 @@ int psbridge_delete_fpl(int uid)
         }
     }
 
-    return 1;
+    return -1;
 }

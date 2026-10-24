@@ -139,6 +139,13 @@ def emit(instruction, label, address):
 
     if name == "ins":
         _, rt, rs, pos, size = instruction
+
+        if pos == 0 and size == 29:
+            return [
+                f"sll {reg(rt)}, {reg(rs)}, 3",
+                f"srl {reg(rt)}, {reg(rt)}, 3",
+            ]
+
         mask = ((1 << size) - 1) << pos if size < 32 else 0xffffffff
         scratch = [item for item in (26, 27, 1, 25, 24, 23, 22, 21) if item not in (rs, rt)][:2]
         first, second = scratch

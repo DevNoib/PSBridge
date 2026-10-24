@@ -24,6 +24,9 @@ extern const u32 psp_import_count;
 int psbridge_start(void);
 
 void *psbridge_game_pointer(const void *pointer);
+void *psbridge_video_memory(void);
+int psbridge_controller_read(void *output, int count);
+int psbridge_utility(u32 nid, void *argument);
 
 int psbridge_alloc_partition(int partition, const char *name, int type,u32 size,void *address);
 
@@ -38,5 +41,18 @@ int psbridge_delete_fpl(int uid);
 int psbridge_create_thread(const char *name, void *entry, int priority, int stack_size, u32 attributes, void *options);
 
 int psbridge_start_thread(int uid, u32 arg_size, void *arg);
+int psbridge_create_lwmutex(void *workarea, u32 attributes, int initial_count);
+int psbridge_delete_lwmutex(void *workarea);
+int psbridge_lock_lwmutex(void *workarea, int count);
+int psbridge_unlock_lwmutex(void *workarea, int count);
+
+int psbridge_file_open(const char *path, int flags, int mode);
+int psbridge_file_close(int descriptor);
+int psbridge_file_read(int descriptor, void *buffer, u32 size);
+int psbridge_file_write(int descriptor, const void *buffer, u32 size);
+s64 psbridge_file_seek(int descriptor, u32 low, u32 high, int whence);
+int psbridge_file_stat(const char *path, void *output);
+int psbridge_file_remove(const char *path);
+int psbridge_file_rename(const char *old_path, const char *new_path);
 
 #endif
