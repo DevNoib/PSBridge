@@ -166,6 +166,18 @@ static void copy_framebuffer(void)
     if (width < PSP_WIDTH || width > 2048)
         width = PSP_BUFFER_WIDTH;
 
+    if (framebuffer_format == 1) {
+        for (y = 0; y < PSP_HEIGHT; y++) {
+            memcpy(
+                frame_pixels + y * PSP_BUFFER_WIDTH,
+                (const u16 *)source + y * width,
+                PSP_WIDTH * sizeof(u16)
+            );
+        }
+
+        return;
+    }
+
     for (y = 0; y < PSP_HEIGHT; y++) {
         for (x = 0; x < PSP_WIDTH; x++) {
             u16 pixel = convert_pixel(
