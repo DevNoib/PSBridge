@@ -63,4 +63,16 @@ int psbridge_umd_activate(int mode, const char *name);
 int psbridge_umd_deactivate(int mode, const char *name);
 int psbridge_umd_wait(u32 state);
 
+
+/*
+Vai tomar no cu se essa porra não funcionar vou mandar todo mundo tomar 
+no cu porque puta que pariu
+
+*/
+
+int psbridge_create_mailbox(const char *name, u32 attributes, void *options);
+int psbridge_send_mailbox(int uid, void *message);
+int psbridge_receive_mailbox(int uid, void *output, void *timeout);
+int psbridge_delete_mailbox(int uid);
+
 #endif

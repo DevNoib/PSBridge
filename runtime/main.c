@@ -5,7 +5,7 @@
 #include <sifrpc.h>
 #include <psbridge.h>
 
-u32 main_kernel_work[0x100];
+u32 main_kernel_work[0x400] __attribute__((aligned(16)));
 
 int main(void) 
 {

@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <timer.h>
+#include <stdio.h>
+#include <kernel.h>
 
 #include <psbridge.h>
 
@@ -42,6 +44,21 @@ static u64 system_time(void)
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a5;
+
+    static u32 last_library;
+    static u32 last_nid;
+
+    if (import->library != last_library || import->nid != last_nid) {
+        printf(
+            "passou import %08x %08x\n",
+            import->library,
+            import->nid
+        );
+
+        last_library = import->library;
+        last_nid = import->nid;
+    }
+
 
     if (import->library == LIB_SYSMEM) {
         if (import->nid == 0x13a5abef)
@@ -135,8 +152,12 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         }
     }
 
-    if (import->library == LIB_AUDIO)
+    if (import->library == LIB_AUDIO) {
+        if(import->nid == 0x2d53f36e)
+            DelayThread(20000);
+
         return 0;
+    }
 
     if (import->library == LIB_DISPLAY)
         return psbridge_display(import->nid, a0, a1, a2, a3);
@@ -160,6 +181,32 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         return psbridge_ge(import->nid, a0, a1, a2, a3);
 
     if (import->library == LIB_THREADMAN) {
+
+        if (import->nid == 0x8125221d)
+            return psbridge_create_mailbox(
+                (const char *)a0,
+                a1,
+                (void *)a2
+            );
+
+        if (import->nid == 0x86255ada)
+            return psbridge_delete_mailbox((int)a0);
+
+        if (import->nid == 0xe9b3061e)
+            return psbridge_send_mailbox(
+                (int) a0,
+                (void *)a1
+            );
+
+        if (import->nid == 0xf3986382 ||
+            import->nid == 0x18260574
+        )
+            return psbridge_receive_mailbox(
+                (int)a0,
+                (void *)a1,
+                (void *)a2
+            );
+
         if (import->nid == 0xbc80ec7c)
             return psbridge_call_guest((void *)a1, (void *)a2);
 
@@ -255,6 +302,9 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return 0;
         }
 
+        if(import->nid == 0x3ee30821)
+            return 0;
+
         if (import->nid == 0x79d1c3fa)
             return 0;
     }
@@ -282,10 +332,18 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return 0;
     }
 
-    scr_printf(
+    printf(
         "import sem runtime lib 0x%08x nid 0x%08x\n",
         import->library,
         import->nid
     );
+
+    printf(
+        "thread %d import %08x %08x\n",
+        GetThreadId(),
+        import->library,
+        import->nid
+    );
+
     return -1;
 }

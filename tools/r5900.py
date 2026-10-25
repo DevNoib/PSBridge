@@ -47,16 +47,16 @@ def resolve_jump(source):
 
 def emit_vfpu_dispatch(opcode, address):
     return [
-        "addiu $sp, $sp, -16",
-        "sw $26, 0($sp)",
-        "sw $27, 4($sp)",
-        *load_value(26, opcode),
+        "sw $27, 108($26)",
+        "sw $31, 124($26)",
+        *load_value(27, opcode),
+        "sw $27, 280($26)",
         *load_value(27, address & 0xffffffff),
+        "sw $27, 284($26)",
         "jal psbridge_vfpu_entry",
         "nop",
-        "lw $26, 0($sp)",
-        "lw $27, 4($sp)",
-        "addiu $sp, $sp, 16",
+        "lw $27, 108($26)",
+        "lw $31, 124($26)"
     ]
 
 

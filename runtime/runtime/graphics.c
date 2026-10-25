@@ -3,6 +3,7 @@
 #include <kernel.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "psbridge.h"
 
@@ -193,10 +194,17 @@ static void copy_framebuffer(void)
 
 static void present(void)
 {
+    printf("pica 1\n");
+
     if (start_graphics() < 0)
         return;
 
+    printf("bate uma pra mim 2\n");
+
     copy_framebuffer();
+
+    printf("bate uma pra mim 3\n");
+
     FlushCache(0);
 
     gsKit_texture_send_inline(
@@ -209,6 +217,8 @@ static void present(void)
         frame_texture.TBW,
         0
     );
+
+    printf("bate uma pra mim 4\n");
 
     gsKit_clear(gs, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
     gsKit_prim_sprite_texture(
@@ -226,9 +236,14 @@ static void present(void)
         GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
     );
 
+    printf("bate uma pra mim 5\n");
+
     gsKit_queue_exec(gs);
+    printf("bate uma pra mim 6\n");
     gsKit_finish();
+    printf("bate uma pra mim 7\n");
     gsKit_sync_flip(gs);
+    printf("bate uma pra mim 8\n");
 }
 
 u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
@@ -246,7 +261,9 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
     }
 
     if (nid == 0x984c27e7 || nid == 0x46f186c3) {
+        printf("antes de gozar\n");
         present();
+        printf("depois de gozar\n");
         return 0;
     }
 

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "psbridge.h"
 
@@ -1121,6 +1122,12 @@ u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
 {
     GeList *list;
     int index;
+
+    printf(
+        "ge nid %08x a0 %08x a1 %08x\n",
+        nid,
+        a0,a1
+    );
 
     if (nid == 0xe47e40e4)
         return (u32)(uintptr_t)psbridge_video_memory();

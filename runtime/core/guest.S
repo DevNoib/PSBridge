@@ -48,8 +48,8 @@ psbridge_import:
     sd $27, 40($sp)
     sd $gp, 32($sp)
 
-    lw $9, 80($sp)
-    lw $10, 84($sp)
+    or $10, $9, $0
+    or $9, $8, $0
     or $8, $7, $0
     or $7, $6, $0
     or $6, $5, $0

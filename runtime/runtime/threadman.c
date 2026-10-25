@@ -2,13 +2,16 @@
 #include <kernel.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "psbridge.h"
 
 #define THREAD_ARG_SIZE 256
 #define THREAD_LIMIT 8
 #define THREAD_STACK_SIZE 0x10000
-#define KERNEL_STACK_SIZE 0x100
+#define KERNEL_STACK_SIZE 0x1000
+#define MAILBOX_LIMIT 8
+#define MAILBOX_MESSAGES 32
 
 typedef struct {
     int used;
@@ -30,6 +33,17 @@ typedef struct {
     int padding[3];
 } PspLwMutex;
 
+typedef struct {
+    int used;
+    int uid;
+    int semaphore;
+    int lock;
+    u32 messages[MAILBOX_MESSAGES];
+    int read_index;
+    int write_index;
+    int count;
+} PspMailbox;
+
 extern void *_gp;
 
 extern int psbridge_call_thread(
@@ -42,6 +56,9 @@ extern int psbridge_call_thread(
 static PspThread threads[THREAD_LIMIT];
 static int next_lwmutex_uid = 0x1000;
 
+static PspMailbox mailboxes[MAILBOX_LIMIT];
+static int next_mailbox_uid = 0x3000;
+
 static unsigned char thread_stacks[THREAD_LIMIT] [THREAD_STACK_SIZE]
     __attribute__((aligned(16)));
 
@@ -53,6 +70,18 @@ static PspThread *find_thread(int uid)
         if (threads[index].used && threads[index].uid == uid)
             return &threads[index];
     }
+    return NULL;
+}
+
+static PspMailbox *find_mailbox(int uid)
+{
+    int index;
+
+    for (index = 0; index < MAILBOX_LIMIT; index++) {
+        if (mailboxes[index].used && mailboxes[index].uid == uid)
+            return &mailboxes[index];
+    }
+
     return NULL;
 }
 
@@ -231,6 +260,160 @@ int psbridge_unlock_lwmutex(void *workarea, int count)
 
     if (!mutex->lock_level)
         mutex->lock_thread = 0;
+
+    return 0;
+}
+
+int psbridge_create_mailbox(const char *name, u32 attributes, void *options)
+{
+    int index;
+    (void)name;
+    (void)attributes;
+    (void)options;
+
+    for (index = 0; index < MAILBOX_LIMIT; index++) {
+        PspMailbox *mailbox;
+        ee_sema_t config;
+        int semaphore;
+        int lock;
+
+        if (mailboxes[index].used)
+            continue;
+
+        memset(&config, 0, sizeof(config));
+
+        config.init_count = 0;
+        config.max_count = MAILBOX_MESSAGES;
+
+        semaphore = CreateSema(&config);
+
+        if (semaphore < 0)
+             return semaphore;
+           
+
+        memset(&config, 0, sizeof(config));
+        config.init_count = 1;
+        config.max_count = 1;
+
+        lock = CreateSema(&config);
+
+        if (lock < 0) {
+            DeleteSema(semaphore);
+            return lock;
+        }
+
+        mailbox = &mailboxes[index];
+        memset(mailbox, 0, sizeof(*mailbox));
+
+        mailbox->used = 1;
+        mailbox->uid = next_mailbox_uid++;
+        mailbox->semaphore = semaphore;
+        mailbox->lock = lock;
+
+        printf("mbx criou %d\n", mailbox->uid);
+
+        
+
+        return mailbox->uid;
+
+
+    }
+
+    return -1;
+}
+
+int psbridge_send_mailbox(int uid, void *message)
+{
+    PspMailbox *mailbox = find_mailbox(uid);
+    int result;
+
+    if (!mailbox || !message)
+        return -1;
+
+    if (!psbridge_game_pointer(message))
+        return -1;
+
+    result = WaitSema(mailbox->lock);
+
+    if (result < 0)
+        return result;
+
+    if (mailbox->count >= MAILBOX_MESSAGES) {
+        SignalSema(mailbox->lock);
+        return -1;
+    }
+
+    mailbox->messages[mailbox->write_index] =
+        (u32) (uintptr_t)message;
+
+    mailbox->write_index =
+        (mailbox->write_index +1) % MAILBOX_MESSAGES;
+
+    mailbox->count++;
+
+    SignalSema(mailbox->lock);
+    SignalSema(mailbox->semaphore);
+
+    return 0;
+}
+
+int psbridge_receive_mailbox(int uid, void *output, void *timeout)
+{
+    PspMailbox *mailbox = find_mailbox(uid);
+    u32 *destination = psbridge_game_pointer(output);
+    int result;
+
+    (void)timeout;
+
+    if (!mailbox || !destination)
+        return -1;
+
+    result = WaitSema(mailbox->semaphore);
+
+    if (result < 0)
+        return result;
+
+    result = WaitSema(mailbox->lock);
+
+    if (result < 0)
+        return result;
+
+    if (mailbox->count <= 0) {
+        SignalSema(mailbox->lock);
+        return -1;
+    }
+
+    *destination = mailbox->messages[mailbox->read_index];
+
+    mailbox->read_index =
+        (mailbox->read_index + 1) % MAILBOX_MESSAGES;
+
+    mailbox->count--;
+
+    printf(
+        "mbl recebou uid %d msg %08x fila %d thread %d\n",
+        uid,
+        *destination,
+        mailbox->count,
+        GetThreadId()
+    );
+
+    SignalSema(mailbox->lock);
+
+    return 0;
+}
+
+int psbridge_delete_mailbox(int uid)
+{
+    PspMailbox *mailbox = find_mailbox(uid);
+
+    if (!mailbox)
+        return -1;
+
+    DeleteSema(mailbox->semaphore);
+    DeleteSema(mailbox->lock);
+
+    memset(mailbox, 0, sizeof(*mailbox));
 
     return 0;
 }
