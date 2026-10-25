@@ -40,6 +40,9 @@ static u64 system_time(void)
 #define LIB_IMPOSE 0x8c6c6141
 #define LIB_LOADEXEC 0xc469257c
 #define LIB_MODULEMGR 0xe2307313
+#define LIB_SUSPEND 0x1707c132
+#define LIB_SAS 0x1d46fbf4
+#define LIB_ATRAC 0x75263ea8
 
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
@@ -110,6 +113,21 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         if (import->nid == 0xf27a9c51)
             return psbridge_file_remove((const char *)a0);
 
+        if (import->nid == 0x54f5fb11) {
+            const char *device = psbridge_game_pointer((void *)a0);
+
+            if (
+                device &&
+                !strcmp(device, "fatms0:") &&
+                a1 == 0x2415821 &&
+                a2 &&
+                a3 >=4
+            )
+                return 0;
+
+            return -1;
+        }
+
         if (import->nid == 0x779103a0)
             return psbridge_file_rename((const char *)a0, (const char *)a1);
     }
@@ -125,6 +143,9 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return 0x10000;
 
         if (import->nid == 0xbea46419)
+            return psbridge_lock_lwmutex((void *)a0, (int)a1);
+
+        if (import->nid == 0x1fc64e09)
             return psbridge_lock_lwmutex((void *)a0, (int)a1);
 
         if (import->nid == 0x15b6446b)
@@ -158,6 +179,19 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 
         return 0;
     }
+
+    if (import->library == LIB_SAS) {
+        if(
+            import->nid == 0x42778a9f ||
+            import->nid == 0x50a14dfc
+        )
+
+        return 0;
+    }
+       
+    
+    if (import->library == LIB_ATRAC && import->nid == 0x132f1eca)
+        return 0;
 
     if (import->library == LIB_DISPLAY)
         return psbridge_display(import->nid, a0, a1, a2, a3);
@@ -302,6 +336,11 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return 0;
         }
 
+        if(import->nid ==0xb435dec5) {
+            FlushCache(0);
+            return 0;
+        }
+
         if(import->nid == 0x3ee30821)
             return 0;
 
@@ -330,6 +369,14 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 
         if (import->nid == 0xaee7404d)
             return 0;
+    }
+
+    if (import->library == LIB_SUSPEND) {
+            if (import->nid == 0x3e0271d3)
+                return psbridge_volatile_lock((void *)a1, (void *)a2);
+
+            if (import->nid == 0xa569e425)
+                return psbridge_volatile_unlock();
     }
 
     printf(

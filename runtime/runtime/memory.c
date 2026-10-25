@@ -31,6 +31,9 @@ static u32 heap_position;
 static MemoryBlock blocks[BLOCK_LIMIT];
 static FixedPool pools[FPL_LIMIT];
 
+static void * volatile_memory;
+static int volatile_locked;
+
 void *psbridge_video_memory(void)
 {
     return video_memory;
@@ -64,6 +67,37 @@ static void *heap_alloc(u32 size)
 
     heap_position = start + size;
     return game_heap + start;
+}
+
+int psbridge_volatile_lock(void *address, void *size)
+{
+    u32 *output_address = psbridge_game_pointer(address);
+    u32 *output_size = psbridge_game_pointer(size);
+
+    if (!output_address || !output_size || volatile_locked)
+        return -1;
+
+    if (!volatile_memory)
+        volatile_memory = heap_alloc(0x40000);
+
+    if (!volatile_memory)
+        return -1;
+
+    volatile_locked = 1;
+    *output_address = (u32) (uintptr_t)volatile_memory;
+    *output_size = 0x40000;
+
+    return 0;
+
+}
+
+int psbridge_volatile_unlock(void)
+{
+    if (!volatile_locked)
+        return -1;
+
+    volatile_locked = 0;
+    return 0;
 }
 
 int psbridge_alloc_partition (int partition, const char *name, int type,u32 size,void *address)

@@ -33,6 +33,9 @@ u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3);
 
 int psbridge_alloc_partition(int partition, const char *name, int type,u32 size,void *address);
 
+int psbridge_volatile_lock(void *address, void *size);
+int psbridge_volatile_unlock(void);
+
 void *psbridge_block_address(int uid);
 int psbridge_free_partition(int uid);
 
@@ -74,5 +77,6 @@ int psbridge_create_mailbox(const char *name, u32 attributes, void *options);
 int psbridge_send_mailbox(int uid, void *message);
 int psbridge_receive_mailbox(int uid, void *output, void *timeout);
 int psbridge_delete_mailbox(int uid);
+
 
 #endif
