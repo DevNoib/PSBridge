@@ -118,6 +118,31 @@ def emit(instruction, label, address):
         _, fs, ft = instruction
         return [f"{name} {freg(fs)}, {freg(ft)}"]
 
+    if name == "wsbw":
+        _, rd, rt = instruction
+        if rd == 0:
+            return ["nop"]
+
+        scratch = [item for item in (26, 27, 1, 25, 24, 23, 22, 21) if item not in (rd, rt)][:2]
+        first, second = scratch
+        return [
+            f"mthi1 {reg(first)}",
+            f"mtlo1 {reg(second)}",
+            f"sll {reg(first)}, {reg(rt)}, 8",
+            f"lui {reg(second)}, 0xff00",
+            f"ori {reg(second)}, {reg(second)}, 0xff00",
+            f"and {reg(first)}, {reg(first)}, {reg(second)}",
+            f"srl {reg(rd)}, {reg(rt)}, 8",
+            f"nor {reg(second)}, {reg(second)}, $0",
+            f"and {reg(rd)}, {reg(rd)}, {reg(second)}",
+            f"or {reg(rd)}, {reg(rd)}, {reg(first)}",
+            f"sll {reg(first)}, {reg(rd)}, 16",
+            f"srl {reg(rd)}, {reg(rd)}, 16",
+            f"or {reg(rd)}, {reg(rd)}, {reg(first)}",
+            f"mflo1 {reg(second)}",
+            f"mfhi1 {reg(first)}",
+        ]
+
     if name == "cache":
         return ["nop"]
 

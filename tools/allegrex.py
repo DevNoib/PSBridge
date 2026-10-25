@@ -147,6 +147,9 @@ def decode(address, word):
     if op == 0x2f:
         return "cache", rt, rs, signed(value)
 
+    if op == 0x1f and funct == 0x20 and rs == 0 and shift == 3:
+        return "wsbw", rd, rt
+
     if op == 0x1f and funct == 0:
         return "ext", rt, rs, shift, rd + 1
     if op == 0x1f and funct == 4:
@@ -239,6 +242,9 @@ def format_instruction(instruction):
     if name in ("c.eq.s", "c.lt.s", "c.le.s"):
         _, fs, ft = instruction
         return f"{name} {freg(fs)}, {freg(ft)}"
+
+    if name == "wsbw":
+        return f"wsbw {reg(instruction[1])}, {reg(instruction[2])}"
 
     if name in ("ext", "ins"):
         _, rt, rs, pos, size = instruction

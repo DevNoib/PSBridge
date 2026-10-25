@@ -9,7 +9,7 @@ writes_register = {
     "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn",
     "min", "max", "clz", "mfhi", "mflo", "addiu", "slti", "sltiu",
     "andi", "ori", "xori", "lui", "lb", "lbu", "lh", "lhu", "lwl",
-    "lwr", "lw", "mfc1", "ext", "ins",
+    "lwr", "lw", "mfc1", "ext", "ins", "wsbw",
 }
 
 
