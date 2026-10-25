@@ -85,30 +85,39 @@ psbridge_resolve_guest:
     sw $4, 12($sp)
     sw $5, 16($sp)
     sw $6, 20($sp)
+    sw $7, 24($sp)
 
     lui $5, %hi(guest_info)
     addiu $5, $5, %lo(guest_info)
     lw $4, 0($5)
+    lw $6, 8($5)
+    addu $7, $4, $6
     sltu $1, $25, $4
-    bne $1, $0, guest_resolve_native
+    bne $1, $0, guest_resolve_virtual
     nop
 
-    lw $6, 8($5)
-    addu $6, $4, $6
-    sltu $1, $25, $6
-    beq $1, $0, guest_resolve_native
+    sltu $1, $25, $7
+    beq $1, $0, guest_resolve_virtual
     nop
 
     subu $25, $25, $4
-    lw $6, 4($5)
-    addu $25, $25, $6
-
-guest_resolve_native:
-    lui $1, 0x0200
-    sltu $2, $25, $1
-    bne $2, $0, guest_resolve_done
+    lw $4, 4($5)
+    addu $25, $25, $4
+    b guest_resolve_map
     nop
 
+guest_resolve_virtual:
+    lw $4, 4($5)
+    sltu $1, $25, $4
+    bne $1, $0, guest_resolve_done
+    nop
+
+    addu $7, $4, $6
+    sltu $1, $25, $7
+    beq $1, $0, guest_resolve_done
+    nop
+
+guest_resolve_map:
     or $2, $0, $0
     lui $3, %hi(guest_map_count)
     lw $3, %lo(guest_map_count)($3)
@@ -155,6 +164,7 @@ guest_resolve_done:
     lw $4, 12($sp)
     lw $5, 16($sp)
     lw $6, 20($sp)
+    lw $7, 24($sp)
     addiu $sp, $sp, 32
     jr $ra
     nop

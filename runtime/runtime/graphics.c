@@ -194,16 +194,40 @@ static void copy_framebuffer(void)
 
 static void present(void)
 {
-    printf("pica 1\n");
+    static u32 frame_count;
+    const u32 *pixels;
+    u32 hash = 2166136261u;
+    u32 colored = 0;
+    u32 index;
 
     if (start_graphics() < 0)
         return;
 
-    printf("bate uma pra mim 2\n");
-
     copy_framebuffer();
 
-    printf("bate uma pra mim 3\n");
+    frame_count++;
+
+    if (!(frame_count % 60)) {
+        pixels = framebuffer_pointer(framebuffer);
+
+        if (pixels) {
+            for (index = 0; index < PSP_WIDTH * PSP_HEIGHT; index++) {
+                hash ^= pixels[index];
+                hash *= 16777619u;
+                colored += pixels[index] != 0;
+            }
+        }
+
+        printf(
+            "frame %u buffer %08x formato %d largura %d hash %08x cor %u\n",
+            frame_count,
+            (u32)(uintptr_t)framebuffer,
+            framebuffer_format,
+            framebuffer_width,
+            hash,
+            colored
+        );
+    }
 
     FlushCache(0);
 
@@ -217,8 +241,6 @@ static void present(void)
         frame_texture.TBW,
         0
     );
-
-    printf("bate uma pra mim 4\n");
 
     gsKit_clear(gs, GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0));
     gsKit_prim_sprite_texture(
@@ -236,14 +258,9 @@ static void present(void)
         GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0)
     );
 
-    printf("bate uma pra mim 5\n");
-
     gsKit_queue_exec(gs);
-    printf("bate uma pra mim 6\n");
     gsKit_finish();
-    printf("bate uma pra mim 7\n");
     gsKit_sync_flip(gs);
-    printf("bate uma pra mim 8\n");
 }
 
 u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
@@ -261,9 +278,7 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
     }
 
     if (nid == 0x984c27e7 || nid == 0x46f186c3) {
-        printf("antes de gozar\n");
         present();
-        printf("depois de gozar\n");
         return 0;
     }
 

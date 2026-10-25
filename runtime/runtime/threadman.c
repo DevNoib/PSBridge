@@ -1,4 +1,5 @@
 #include <debug.h>
+#include <delaythread.h>
 #include <kernel.h>
 #include <stdint.h>
 #include <string.h>
@@ -105,6 +106,8 @@ static void run_thread(void *arg)
     kernel_work[0xfc / 4] = 0xffffffff;
     initial_stack[0] = thread->uid;
 
+    printf("thread run uid=%d entry=%08x\n", thread->uid, (u32)(uintptr_t)thread->entry);
+
     scr_printf(
         "entrando na thread %d em 0x%08x\n",
         thread->uid,
@@ -117,6 +120,8 @@ static void run_thread(void *arg)
         thread->arg,
         thread->kernel_work
     );
+
+    printf("thread return uid=%d result=%d\n", thread->uid, result);
 
     scr_printf("thread %d gozou ops quero dizer voltou com %d\n", thread->uid, result);
 
@@ -167,6 +172,8 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
             THREAD_STACK_SIZE -
             KERNEL_STACK_SIZE;
 
+        printf("thread create uid=%d entry=%08x priority=%d\n", threads[index].uid, (u32)(uintptr_t)entry, priority);
+
         scr_printf("thread criada na puta que pariu %d\n", threads[index].uid);
 
         return threads[index].uid;
@@ -206,6 +213,8 @@ int psbridge_start_thread(int uid, u32 arg_size, void *arg)
 
     if (result < 0)
         return result;
+
+    printf("thread start uid=%d size=%u\n", uid, arg_size);
 
     scr_printf("thread iniciada uid %d\n", uid);
 
@@ -351,6 +360,8 @@ int psbridge_send_mailbox(int uid, void *message)
 
     mailbox->count++;
 
+    printf("mbx send uid=%d message=%08x count=%d thread=%d\n", uid, (u32)(uintptr_t)message, mailbox->count, GetThreadId());
+
     SignalSema(mailbox->lock);
     SignalSema(mailbox->semaphore);
 
@@ -361,17 +372,31 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
 {
     PspMailbox *mailbox = find_mailbox(uid);
     u32 *destination = psbridge_game_pointer(output);
+    u32 *remaining = psbridge_game_pointer(timeout);
     int result;
-
-    (void)timeout;
 
     if (!mailbox || !destination)
         return -1;
 
-    result = WaitSema(mailbox->semaphore);
+    if (!timeout) {
+        result = WaitSema(mailbox->semaphore);
+    } else {
+        if (!remaining)
+            return -1;
+
+        result = PollSema(mailbox->semaphore);
+
+        if (result < 0 && *remaining) {
+            DelayThread(*remaining);
+            result = PollSema(mailbox->semaphore);
+            *remaining = 0;
+        }
+    }
 
     if (result < 0)
-        return result;
+        return -1;
+
+    printf("mbx ready uid=%d count=%d thread=%d\n", uid, mailbox->count, GetThreadId());
 
     result = WaitSema(mailbox->lock);
 

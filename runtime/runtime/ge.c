@@ -953,11 +953,38 @@ static void draw_primitive(u32 argument)
     int count = argument & 0xffff;
     VertexLayout layout;
     int index;
+    GeVertex first;
+    GeVertex second;
+
+    printf(
+        "ge prim %d count %d type %08x vert %08x index %08x frame %08x width %08x\n",
+        primitive,
+        count,
+        type,
+        state.vertex_address,
+        state.index_address,
+        buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH),
+        state.command[GE_VADDR_WIDTH]
+    );
 
     if (!(type & (1 << 23)) || count <= 0)
         return;
 
     layout = vertex_layout(type);
+    first = read_vertex(0, type, layout);
+    second = read_vertex(1, type, layout);
+
+    printf(
+        "ge vertices %.2f %.2f %.2f %.2f cores %08x %08x scissor %08x %08x\n",
+        first.x,
+        first.y,
+        second.x,
+        second.y,
+        first.color,
+        second.color,
+        state.command[GE_SCISSOR1],
+        state.command[GE_SCISSOR2]
+    );
 
     if (primitive == 6) {
         for (index = 0; index + 1 < count; index += 2)
@@ -1042,6 +1069,8 @@ static GeList *find_list(int id)
 static void execute_list(GeList *list)
 {
     int commands = 0;
+    int primitives = 0;
+    u32 start = list->pc;
 
     while (!list->done && commands++ < GE_COMMAND_LIMIT) {
         const u32 *instruction;
@@ -1051,6 +1080,11 @@ static void execute_list(GeList *list)
 
         if (list->stall && list->pc == list->stall)
             break;
+
+        if (!list->pc || (list->pc & 3)) {
+            list->done = 1;
+            break;
+        }
 
         instruction = ge_pointer(list->pc);
 
@@ -1073,8 +1107,10 @@ static void execute_list(GeList *list)
             state.offset_address = argument << 8;
         else if (command == GE_ORIGIN)
             state.offset_address = list->pc - 4;
-        else if (command == GE_PRIM)
+        else if (command == GE_PRIM) {
+            primitives++;
             draw_primitive(argument);
+        }
         else if (command == GE_TRANSFERSTART)
             transfer_pixels();
         else if (command == GE_JUMP)
@@ -1092,12 +1128,30 @@ static void execute_list(GeList *list)
             list->done = 1;
         }
     }
+
+    if (commands >= GE_COMMAND_LIMIT)
+        list->done = 1;
+
+    printf(
+        "ge lista %08x pc %08x comandos %d primitivas %d fim %d\n",
+        start,
+        list->pc,
+        commands,
+        primitives,
+        list->done
+    );
 }
 
 static int enqueue_list(u32 address, u32 stall)
 {
     GeList *list = NULL;
     int index;
+
+    address &= 0x3fffffff;
+    stall &= 0x3fffffff;
+
+    if (!address || (address & 3) || (stall & 3))
+        return -1;
 
     for (index = 0; index < GE_LIST_LIMIT; index++) {
         if (!lists[index].used || lists[index].done) {
@@ -1112,8 +1166,8 @@ static int enqueue_list(u32 address, u32 stall)
     memset(list, 0, sizeof(*list));
     list->used = 1;
     list->id = next_list_id++;
-    list->pc = address & 0x3fffffff;
-    list->stall = stall & 0x3fffffff;
+    list->pc = address;
+    list->stall = stall;
     execute_list(list);
     return list->id;
 }

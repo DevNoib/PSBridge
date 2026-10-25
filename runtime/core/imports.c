@@ -48,21 +48,6 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 {
     (void)a5;
 
-    static u32 last_library;
-    static u32 last_nid;
-
-    if (import->library != last_library || import->nid != last_nid) {
-        printf(
-            "passou import %08x %08x\n",
-            import->library,
-            import->nid
-        );
-
-        last_library = import->library;
-        last_nid = import->nid;
-    }
-
-
     if (import->library == LIB_SYSMEM) {
         if (import->nid == 0x13a5abef)
             return 0;
@@ -181,12 +166,21 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
     }
 
     if (import->library == LIB_SAS) {
-        if(
+        if (
             import->nid == 0x42778a9f ||
             import->nid == 0x50a14dfc
         )
+            return 0;
 
-        return 0;
+        if (import->nid == 0x07f58c24) {
+            u32 *heights = psbridge_game_pointer((void *)(uintptr_t)a1);
+
+            if (!heights)
+                return -1;
+
+            memset(heights, 0, 32 * sizeof(*heights));
+            return 0;
+        }
     }
        
     
