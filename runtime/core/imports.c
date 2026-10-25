@@ -35,16 +35,22 @@ static u64 system_time(void)
 #define LIB_UTILS 0xa8587892
 #define LIB_UMD 0x964db0c7
 #define LIB_POWER 0x892fba53
+#define LIB_IMPOSE 0x8c6c6141
 #define LIB_LOADEXEC 0xc469257c
+#define LIB_MODULEMGR 0xe2307313
 
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
     (void)a5;
 
     if (import->library == LIB_SYSMEM) {
+        if (import->nid == 0x13a5abef)
+            return 0;
+
         if (
             import->nid == 0x35669d4c ||
-            import->nid == 0xf77d77cb
+            import->nid == 0xf77d77cb ||
+            import->nid == 0x1b4217bc
         )
             return 0;
 
@@ -97,6 +103,9 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 
         if (import->nid == 0x5f10d406)
             return 0;
+
+        if (import->nid == 0xd13bde95)
+            return 0x10000;
 
         if (import->nid == 0xbea46419)
             return psbridge_lock_lwmutex((void *)a0, (int)a1);
@@ -151,6 +160,9 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         return psbridge_ge(import->nid, a0, a1, a2, a3);
 
     if (import->library == LIB_THREADMAN) {
+        if (import->nid == 0xbc80ec7c)
+            return psbridge_call_guest((void *)a1, (void *)a2);
+
         if (import->nid == 0xe81caf8f)
             return next_callback_uid++;
 
@@ -216,7 +228,18 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
     if (import->library == LIB_LOADEXEC && import->nid == 0x4ac57943)
         return 0;
 
-    if (import->library == LIB_POWER && import->nid == 0x04b7766e)
+    if (import->library == LIB_MODULEMGR && import->nid == 0x8f2df740)
+        return 0;
+
+    if (import->library == LIB_POWER) {
+        if (
+            import->nid == 0x04b7766e ||
+            import->nid == 0x469989ad
+        )
+            return 0;
+    }
+
+    if (import->library == LIB_IMPOSE)
         return 0;
 
     if (import->library == LIB_UTILS) {

@@ -23,6 +23,28 @@ def load_value(register, value):
     ]
 
 
+def resolve_jump(source):
+    lines = [
+        "sw $25, -4($sp)",
+        "sw $31, -8($sp)",
+        f"or $25, {reg(source)}, $0",
+        "addiu $sp, $sp, -8",
+        "jal psbridge_resolve_guest",
+        "nop",
+    ]
+
+    if source != 31:
+        lines.append("lw $31, 0($sp)")
+
+    lines.append(f"or {reg(source)}, $25, $0")
+
+    if source != 25:
+        lines.append("lw $25, 4($sp)")
+
+    lines.append("addiu $sp, $sp, 8")
+    return lines
+
+
 def emit_vfpu_dispatch(opcode, address):
     return [
         "addiu $sp, $sp, -16",
@@ -55,9 +77,15 @@ def emit(instruction, label, address):
         return [f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"]
 
     if name == "jr":
-        return [f"jr {reg(instruction[1])}"]
+        source = instruction[1]
+
+        if source == 31:
+            return [f"jr {reg(source)}"]
+
+        return resolve_jump(source) + [f"jr {reg(source)}"]
     if name == "jalr":
-        return [f"jalr {reg(instruction[1])}, {reg(instruction[2])}"]
+        _, link, source = instruction
+        return resolve_jump(source) + [f"jalr {reg(link)}, {reg(source)}"]
 
     if name in ("addu", "subu", "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn"):
         _, rd, rs, rt = instruction

@@ -2,7 +2,10 @@ from allegrex import branch_names, decode
 from elf_reader import read_function
 
 
-create_thread = "ThreadManForUser", 0x446d8de6
+callback_imports = {
+    ("ThreadManForUser", 0x446d8de6): 5,
+    ("ThreadManForUser", 0xbc80ec7c): 5,
+}
 
 writes_register = {
     "sll", "srl", "sra", "sllv", "srlv", "srav", "addu", "subu",
@@ -186,10 +189,13 @@ def find_callbacks(code, import_map):
             continue
 
         imported = import_map[instruction[1]]
-        if (imported["library"], imported["nid"]) != create_thread:
+        callback_register = callback_imports.get(
+            (imported["library"], imported["nid"])
+        )
+        if callback_register is None:
             continue
 
-        callback = callback_value(instructions, index, 5)
+        callback = callback_value(instructions, index, callback_register)
         if callback in code:
             callbacks.add(callback)
 
@@ -226,10 +232,13 @@ def find_functions(data, segments, entry, import_map, indirect_targets=()):
                 continue
 
             imported = import_map[instruction[1]]
-            if (imported["library"], imported["nid"]) != create_thread:
+            callback_register = callback_imports.get(
+                (imported["library"], imported["nid"])
+            )
+            if callback_register is None:
                 continue
 
-            callback = callback_value(instructions, index, 5)
+            callback = callback_value(instructions, index, callback_register)
             if callback is None or not is_code(segments, callback):
                 continue
 

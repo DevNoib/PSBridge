@@ -11,7 +11,41 @@ from elf_reader import read_code, read_word
 from module_sexytion import add_image, add_info, add_map, write_map
 from imports import find_module, read_imports, import_symbol, link_imports
 from r5900 import emit
-from relocate import relocate
+from relocate import read_headers, relocate
+
+
+def find_image_pointers(elf, data, image_base, code_targets):
+    _, sections = read_headers(elf)
+    pointers = {}
+    functions = set()
+    image_end = image_base + len(data)
+
+    for section in sections:
+        _, kind, flags, address, _, size, _, _, _, _ = section
+
+        if kind == 8 or not flags & 2 or flags & 4:
+            continue
+
+        start = (address + 3) & ~3
+        end = address + size
+
+        for location in range(start, end - 3, 4):
+            offset = location - image_base
+
+            if offset < 0 or offset + 4 > len(data):
+                continue
+
+            value = struct.unpack_from("<I", data, offset)[0]
+
+            if value & 3 or value < image_base or value >= image_end:
+                continue
+
+            pointers[offset] = value
+
+            if value in code_targets:
+                functions.add(value)
+
+    return pointers, functions
 
 def read_game_code(elf, data, segments, absolute=False):
     base = 0 if absolute else min(vaddr - offset for offset, vaddr, *_ in segments)
@@ -29,7 +63,15 @@ def read_game_code(elf, data, segments, absolute=False):
     return code, names, base
 
 
-def emit_instruction(address, instruction, label, references, lower_address=None):
+def emit_instruction(
+    address,
+    instruction,
+    label,
+    references,
+    guest_base,
+    guest_size,
+    lower_address=None,
+):
     target = references["high"].get(address)
 
     if target is not None:
@@ -55,6 +97,21 @@ def emit_instruction(address, instruction, label, references, lower_address=None
             return [f"{name} ${rt}, %lo({label(target)})(${rs})"]
 
         raise ValueError(f"o lo16 em 0x{address:08x} caiu num {name}")
+
+    if instruction[0] == "lui":
+        register = instruction[1]
+        page = instruction[2] << 16
+
+        if page + 0x10000 > guest_base and page < guest_base + guest_size:
+            offset = page - guest_base
+            sign = "+" if offset >= 0 else "-"
+            amount = abs(offset)
+            image = f"guest_memory {sign} 0x{amount:x}"
+
+            return [
+                f"lui ${register}, %hi({image})",
+                f"addiu ${register}, ${register}, %lo({image})",
+            ]
 
     return emit(instruction, label, lower_address or address)
 
@@ -105,6 +162,12 @@ def add_jump_with_long_delay(lines, address, instruction, delay, label, emit_at)
     if source is not None and output_register(delay) == source:
         raise ValueError(f"o delay slot em 0x{address + 4:08x} apagou o alvo do salto")
 
+    if source is not None:
+        from r5900 import resolve_jump
+
+        for line in resolve_jump(source):
+            add_line(lines, line)
+
     for line in emit_at(address + 4, delay, label, address + 0x100000000):
         add_line(lines, line)
 
@@ -128,6 +191,7 @@ def recompile(input_path, output_path):
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
     code, names, base = read_game_code(elf, data, segments, absolute=absolute)
+    image_base = min(vaddr - offset for offset, vaddr, *_ in segments)
 
     import_map = {
         item["stub"]: item
@@ -140,6 +204,12 @@ def recompile(input_path, output_path):
         code.pop(stub + 4, None)
 
     addresses = set(code)
+    image_pointers, pointer_functions = find_image_pointers(
+        elf,
+        data,
+        image_base,
+        addresses | set(import_map),
+    )
     missing = references["targets"] - addresses - set(import_map)
 
     if missing:
@@ -166,7 +236,19 @@ def recompile(input_path, output_path):
         for instruction in code.values()
         if (target := target_of(instruction)) not in (None, 0)
     }
-    map_addresses = {entry} | callbacks | references["targets"] | direct_targets
+    return_followers = {
+        address + 8
+        for address, instruction in code.items()
+        if instruction[0] == "jr" and instruction[1] == 31 and address + 8 in addresses
+    }
+    map_addresses = (
+        {entry} |
+        callbacks |
+        references["targets"] |
+        direct_targets |
+        pointer_functions |
+        return_followers
+    )
 
     def label(address):
         if address in import_map:
@@ -191,6 +273,8 @@ def recompile(input_path, output_path):
             instruction,
             current_label,
             references,
+            image_base,
+            len(data),
             lower_address,
         )
 
@@ -245,15 +329,24 @@ def recompile(input_path, output_path):
     binary_path.write_bytes(data)
 
     add_map(lines, map_addresses, label)
+    image_words = dict(references["words"])
+    image_words.update(image_pointers)
+
+    def image_label(target):
+        if target in addresses or target in import_map:
+            return label(target)
+
+        return f"guest_memory + 0x{target - image_base:x}"
+
     file_size = add_image(
         lines,
         binary_path,
         data,
         segments,
-        references["words"],
-        label,
+        image_words,
+        image_label,
     )
-    add_info(lines, base, len(data), file_size, module["gp"])
+    add_info(lines, image_base, len(data), file_size, module["gp"])
 
     output_path.write_text("\n".join(lines) + "\n")
     write_map(map_path, map_addresses, label)
@@ -268,6 +361,7 @@ def recompile(input_path, output_path):
     print(f"tipos de instrução que fizeram o decoder gozar {len(names)}")
     print(f"relocações que pararam de apontar pra puta que pariu {relocations}")
     print(f"ponteiros de código que acharam o rumo {len(references['targets'])}")
+    print(f"ponteiros da imagem que acharam o rumo {len(image_pointers)}")
     print(f"tabelas de salto que pararam de se esconder {len(jump_tables)}")
     print(f"endereços que não vão mais se perder no mapa {len(map_addresses)}")
     print(f"imports amarrados na nega {linked_imports}")

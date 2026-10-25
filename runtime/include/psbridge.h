@@ -22,6 +22,7 @@ extern const GuestInfo guest_info;
 extern const u32 psp_import_count;
 
 int psbridge_start(void);
+int psbridge_call_guest(void *entry, void *argument);
 
 void *psbridge_game_pointer(const void *pointer);
 void *psbridge_video_memory(void);
