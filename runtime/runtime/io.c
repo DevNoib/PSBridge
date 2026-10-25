@@ -8,6 +8,16 @@
 #include "psbridge.h"
 
 #define PATH_SIZE 512
+#define UMD_DESCRIPTOR 0x4000
+#define UMD_HANDLES 8
+
+typedef struct {
+    int used;
+    s64 position;
+} UmdHandle;
+
+static UmdHandle umd_handles[UMD_HANDLES];
+static int umd_active = 1;
 
 typedef struct {
     u16 year;
@@ -39,6 +49,9 @@ static int host_path(const char *path, char *output)
     if (!game_path)
         return -1;
 
+    if (!strncmp(game_path, "disc0:/sce_lbn", 14))
+        return -1;
+
     if (!strncmp(game_path, "disc0:/", 7)) {
         prefix = "host:";
         relative = game_path + 7;
@@ -51,6 +64,81 @@ static int host_path(const char *path, char *output)
 
     length = snprintf(output, PATH_SIZE, "%s%s", prefix, relative);
     return length >= 0 && length < PATH_SIZE ? 0 : -1;
+}
+
+static int umd_path(const char *path)
+{
+    const char *game_path = psbridge_game_pointer(path);
+
+    if (!game_path)
+        return 0;
+
+    return !strcmp(game_path, "umd0:") || !strcmp(game_path, "umd1:");
+}
+
+static UmdHandle *umd_handle(int descriptor)
+{
+    int index = descriptor - UMD_DESCRIPTOR;
+
+    if (index < 0 || index >= UMD_HANDLES || !umd_handles[index].used)
+        return NULL;
+
+    return &umd_handles[index];
+}
+
+static int host_file_exists(const char *path)
+{
+    int descriptor = open(path, O_RDONLY);
+
+    if (descriptor < 0)
+        return 0;
+
+    close(descriptor);
+    return 1;
+}
+
+int psbridge_umd_present(void)
+{
+    return host_file_exists("host:UMD_DATA.BIN") &&
+        host_file_exists("host:PSP_GAME/PARAM.SFO");
+}
+
+u32 psbridge_umd_state(void)
+{
+    if (!psbridge_umd_present())
+        return 0x01;
+
+    return umd_active ? 0x32 : 0x12;
+}
+
+int psbridge_umd_activate(int mode, const char *name)
+{
+    const char *device = psbridge_game_pointer(name);
+
+    if ((mode != 1 && mode != 2) || !device || strcmp(device, "disc0:"))
+        return -1;
+
+    if (!psbridge_umd_present())
+        return -1;
+
+    umd_active = 1;
+    return 0;
+}
+
+int psbridge_umd_deactivate(int mode, const char *name)
+{
+    const char *device = psbridge_game_pointer(name);
+
+    if ((mode != 1 && mode != 2) || !device || strcmp(device, "disc0:"))
+        return -1;
+
+    umd_active = 0;
+    return 0;
+}
+
+int psbridge_umd_wait(u32 state)
+{
+    return (psbridge_umd_state() & state) ? 0 : -1;
 }
 
 static int open_flags(int flags)
@@ -79,6 +167,22 @@ static int open_flags(int flags)
 int psbridge_file_open(const char *path, int flags, int mode)
 {
     char translated[PATH_SIZE];
+    int index;
+
+    if (umd_path(path)) {
+        if ((flags & 3) == 2 || (flags & 3) == 3 || !psbridge_umd_present())
+            return -1;
+
+        for (index = 0; index < UMD_HANDLES; index++) {
+            if (!umd_handles[index].used) {
+                umd_handles[index].used = 1;
+                umd_handles[index].position = 0;
+                return UMD_DESCRIPTOR + index;
+            }
+        }
+
+        return -1;
+    }
 
     if (host_path(path, translated) < 0)
         return -1;
@@ -88,12 +192,22 @@ int psbridge_file_open(const char *path, int flags, int mode)
 
 int psbridge_file_close(int descriptor)
 {
+    UmdHandle *handle = umd_handle(descriptor);
+
+    if (handle) {
+        memset(handle, 0, sizeof(*handle));
+        return 0;
+    }
+
     return close(descriptor);
 }
 
 int psbridge_file_read(int descriptor, void *buffer, u32 size)
 {
     void *destination = psbridge_game_pointer(buffer);
+
+    if (umd_handle(descriptor))
+        return -1;
 
     if (!destination && size)
         return -1;
@@ -105,6 +219,9 @@ int psbridge_file_write(int descriptor, const void *buffer, u32 size)
 {
     const void *source = psbridge_game_pointer(buffer);
 
+    if (umd_handle(descriptor))
+        return -1;
+
     if (!source && size)
         return -1;
 
@@ -114,6 +231,25 @@ int psbridge_file_write(int descriptor, const void *buffer, u32 size)
 s64 psbridge_file_seek(int descriptor, u32 low, u32 high, int whence)
 {
     s64 offset = (s64)(((u64)high << 32) | low);
+    UmdHandle *handle = umd_handle(descriptor);
+
+    if (handle) {
+        s64 position;
+
+        if (whence == SEEK_SET)
+            position = offset;
+        else if (whence == SEEK_CUR)
+            position = handle->position + offset;
+        else
+            return -1;
+
+        if (position < 0)
+            return -1;
+
+        handle->position = position;
+        return position;
+    }
+
     return lseek(descriptor, offset, whence);
 }
 
@@ -123,7 +259,20 @@ int psbridge_file_stat(const char *path, void *output)
     struct stat source;
     PspFileStat *destination = psbridge_game_pointer(output);
 
-    if (!destination || host_path(path, translated) < 0)
+    if (!destination)
+        return -1;
+
+    if (umd_path(path)) {
+        if (!psbridge_umd_present())
+            return -1;
+
+        memset(destination, 0, sizeof(*destination));
+        destination->mode = 0x21ff;
+        destination->attributes = 0x20;
+        return 0;
+    }
+
+    if (host_path(path, translated) < 0)
         return -1;
 
     if (stat(translated, &source) < 0)

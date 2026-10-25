@@ -177,7 +177,10 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         )
             return 0;
 
-        if (import->nid == 0xceadeb47) {
+        if (
+            import->nid == 0xceadeb47 ||
+            import->nid == 0x68da9e36
+        ) {
             DelayThread((int)a0);
             return 0;
         }
@@ -258,9 +261,24 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 
     if (import->library == LIB_UMD) {
         if (import->nid == 0x46ebb729)
-            return 1;
+            return psbridge_umd_present();
 
-        if (import->nid == 0xaee7404d || import->nid == 0xc6183d47)
+        if (import->nid == 0x6b4a146c)
+            return psbridge_umd_state();
+
+        if (import->nid == 0xc6183d47)
+            return psbridge_umd_activate((int)a0, (const char *)a1);
+
+        if (import->nid == 0xe83742ba)
+            return psbridge_umd_deactivate((int)a0, (const char *)a1);
+
+        if (
+            import->nid == 0x8ef08fce ||
+            import->nid == 0x4a9e5e29
+        )
+            return psbridge_umd_wait(a0);
+
+        if (import->nid == 0xaee7404d)
             return 0;
     }
 
