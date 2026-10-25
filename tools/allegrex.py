@@ -1,3 +1,5 @@
+from vfpu_decode import identify_vfpu
+
 registers = (
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
     "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
@@ -8,6 +10,7 @@ registers = (
 two_reg_branches = ("beq", "bne", "beql", "bnel")
 one_reg_branches = (
     "bltz", "bgez", "bltzl", "bgezl",
+    "bltzal", "bgezal", "bltzall", "bgezall",
     "blez", "bgtz", "blezl", "bgtzl",
 )
 float_branches = ("bc1f", "bc1t", "bc1fl", "bc1tl")
@@ -62,6 +65,8 @@ def decode(address, word):
 
         if funct in (16, 18):
             return ("mfhi" if funct == 16 else "mflo"), rd
+        if funct in (17, 19):
+            return ("mthi" if funct == 17 else "mtlo"), rs
         if funct == 0x16:
             return "clz", rd, rs
 
@@ -84,8 +89,12 @@ def decode(address, word):
         target = ((address + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
         return ("j" if op == 2 else "jal"), target
 
-    if op == 1 and rt in (0, 1, 2, 3):
-        name = {0: "bltz", 1: "bgez", 2: "bltzl", 3: "bgezl"}[rt]
+    if op == 1 and rt in (0, 1, 2, 3, 16, 17, 18, 19):
+        name = {
+            0: "bltz", 1: "bgez", 2: "bltzl", 3: "bgezl",
+            16: "bltzal", 17: "bgezal",
+            18: "bltzall", 19: "bgezall",
+        }[rt]
         return name, rs, branch_target(address, value)
 
     if op in (4, 5, 20, 21):
@@ -96,8 +105,8 @@ def decode(address, word):
         name = {6: "blez", 7: "bgtz", 22: "blezl", 23: "bgtzl"}[op]
         return name, rs, branch_target(address, value)
 
-    if op in (9, 10, 11):
-        return {9: "addiu", 10: "slti", 11: "sltiu"}[op], rt, rs, signed(value)
+    if op in (8, 9, 10, 11):
+        return {8: "addi", 9: "addiu", 10: "slti", 11: "sltiu"}[op], rt, rs, signed(value)
     if op in (12, 13, 14):
         return {12: "andi", 13: "ori", 14: "xori"}[op], rt, rs, value
     if op == 15:
@@ -112,6 +121,10 @@ def decode(address, word):
             return "mfc1", rt, fs
         if fmt == 4:
             return "mtc1", rt, fs
+        if fmt == 2:
+            return "cfc1", rt, fs
+        if fmt == 6:
+            return "ctc1", rt, fs
 
         if fmt == 8 and (rt & 3) in (0, 1, 2, 3):
             name = ("bc1f", "bc1t", "bc1fl", "bc1tl")[rt & 3]
@@ -120,8 +133,15 @@ def decode(address, word):
         if fmt == 16:
             if funct in (0, 1, 2, 3):
                 return ("add.s", "sub.s", "mul.s", "div.s")[funct], fd, fs, rt
-            if funct == 6:
-                return "mov.s", fd, fs
+            if funct in (4, 5, 6, 7, 15):
+                float_operations = {
+                    4: "sqrt.s",
+                    5: "abs.s",
+                    6: "mov.s",
+                    7: "neg.s",
+                    15: "floor.w.s",
+                }
+                return float_operations[funct], fd, fs
             if funct == 0x0d:
                 return "trunc.w.s", fd, fs
             if funct == 0x32:
@@ -147,14 +167,24 @@ def decode(address, word):
     if op == 0x2f:
         return "cache", rt, rs, signed(value)
 
-    if op == 0x1f and funct == 0x20 and rs == 0 and shift == 3:
-        return "wsbw", rd, rt
+    if op == 0x1f and funct == 0x20 and rs == 0:
+        if shift == 3:
+            return "wsbw", rd, rt
+        if shift == 20:
+            return "bitrev", rd, rt
+        if shift == 16:
+            return "seb", rd, rt
+        if shift == 24:
+            return "seh", rd, rt
 
     if op == 0x1f and funct == 0:
         return "ext", rt, rs, shift, rd + 1
     if op == 0x1f and funct == 4:
         return "ins", rt, rs, shift, rd - shift + 1
 
+    vfpu_name = identify_vfpu(word)
+    if vfpu_name is not None:
+        return "vfpu_call", word, vfpu_name
     return "word", word
 
 
@@ -193,7 +223,7 @@ def format_instruction(instruction):
         _, rd, rs, rt = instruction
         return f"{name} {reg(rd)}, {reg(rs)}, {reg(rt)}"
 
-    if name in ("mfhi", "mflo"):
+    if name in ("mfhi", "mflo", "mthi", "mtlo"):
         return f"{name} {reg(instruction[1])}"
     if name in ("mult", "multu", "div", "divu", "madd"):
         return f"{name} {reg(instruction[1])}, {reg(instruction[2])}"
@@ -215,9 +245,9 @@ def format_instruction(instruction):
     if name in float_branches:
         return f"{name} 0x{instruction[1]:08x}"
 
-    if name in ("addiu", "slti", "sltiu", "andi", "ori", "xori"):
+    if name in ("addi", "addiu", "slti", "sltiu", "andi", "ori", "xori"):
         _, rt, rs, value = instruction
-        shown = str(value) if name in ("addiu", "slti", "sltiu") else f"0x{value:x}"
+        shown = str(value) if name in ("addi", "addiu", "slti", "sltiu") else f"0x{value:x}"
         return f"{name} {reg(rt)}, {reg(rs)}, {shown}"
 
     if name == "lui":
@@ -230,21 +260,24 @@ def format_instruction(instruction):
         _, ft, rs, offset = instruction
         return f"{name} {freg(ft)}, {offset}({reg(rs)})"
 
-    if name in ("mfc1", "mtc1"):
+    if name in ("mfc1", "mtc1", "cfc1", "ctc1"):
         _, rt, fs = instruction
         return f"{name} {reg(rt)}, {freg(fs)}"
     if name in ("add.s", "sub.s", "mul.s", "div.s"):
         _, fd, fs, ft = instruction
         return f"{name} {freg(fd)}, {freg(fs)}, {freg(ft)}"
-    if name in ("mov.s", "trunc.w.s", "cvt.s.w"):
+    if name in (
+        "mov.s", "trunc.w.s", "cvt.s.w", "sqrt.s",
+        "abs.s", "neg.s", "floor.w.s",
+    ):
         _, fd, fs = instruction
         return f"{name} {freg(fd)}, {freg(fs)}"
     if name in ("c.eq.s", "c.lt.s", "c.le.s"):
         _, fs, ft = instruction
         return f"{name} {freg(fs)}, {freg(ft)}"
 
-    if name == "wsbw":
-        return f"wsbw {reg(instruction[1])}, {reg(instruction[2])}"
+    if name in ("wsbw", "bitrev", "seb", "seh"):
+        return f"{name} {reg(instruction[1])}, {reg(instruction[2])}"
 
     if name in ("ext", "ins"):
         _, rt, rs, pos, size = instruction

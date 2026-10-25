@@ -23,8 +23,26 @@ def load_value(register, value):
     ]
 
 
+def emit_vfpu_dispatch(opcode, address):
+    return [
+        "addiu $sp, $sp, -16",
+        "sw $26, 0($sp)",
+        "sw $27, 4($sp)",
+        *load_value(26, opcode),
+        *load_value(27, address & 0xffffffff),
+        "jal psbridge_vfpu_entry",
+        "nop",
+        "lw $26, 0($sp)",
+        "lw $27, 4($sp)",
+        "addiu $sp, $sp, 16",
+    ]
+
+
 def emit(instruction, label, address):
     name = instruction[0]
+
+    if name == "vfpu_call":
+        return emit_vfpu_dispatch(instruction[1], address)
 
     if name == "nop":
         return [name]
@@ -49,7 +67,7 @@ def emit(instruction, label, address):
         host = "pminw" if name == "min" else "pmaxw"
         return [f"{host} {reg(rd)}, {reg(rs)}, {reg(rt)}", f"sll {reg(rd)}, {reg(rd)}, 0"]
 
-    if name in ("mfhi", "mflo"):
+    if name in ("mfhi", "mflo", "mthi", "mtlo"):
         return [f"{name} {reg(instruction[1])}"]
     if name in ("mult", "multu", "madd"):
         return [f"{name} {reg(instruction[1])}, {reg(instruction[2])}"]
@@ -91,9 +109,9 @@ def emit(instruction, label, address):
     if name in float_branches:
         return [f"{name} {label(instruction[1])}"]
 
-    if name in ("addiu", "slti", "sltiu", "andi", "ori", "xori"):
+    if name in ("addi", "addiu", "slti", "sltiu", "andi", "ori", "xori"):
         _, rt, rs, value = instruction
-        shown = str(value) if name in ("addiu", "slti", "sltiu") else f"0x{value:x}"
+        shown = str(value) if name in ("addi", "addiu", "slti", "sltiu") else f"0x{value:x}"
         return [f"{name} {reg(rt)}, {reg(rs)}, {shown}"]
     if name == "lui":
         return [f"lui {reg(instruction[1])}, 0x{instruction[2]:x}"]
@@ -105,18 +123,83 @@ def emit(instruction, label, address):
         _, ft, rs, offset = instruction
         return [f"{name} {freg(ft)}, {offset}({reg(rs)})"]
 
-    if name in ("mfc1", "mtc1"):
+    if name in ("mfc1", "mtc1", "cfc1", "ctc1"):
         _, rt, fs = instruction
         return [f"{name} {reg(rt)}, {freg(fs)}"]
     if name in ("add.s", "sub.s", "mul.s", "div.s"):
         _, fd, fs, ft = instruction
         return [f"{name} {freg(fd)}, {freg(fs)}, {freg(ft)}"]
-    if name in ("mov.s", "trunc.w.s", "cvt.s.w"):
+    if name in (
+        "mov.s", "trunc.w.s", "cvt.s.w", "sqrt.s",
+        "abs.s", "neg.s", "floor.w.s",
+    ):
         _, fd, fs = instruction
         return [f"{name} {freg(fd)}, {freg(fs)}"]
     if name in ("c.eq.s", "c.lt.s", "c.le.s"):
         _, fs, ft = instruction
         return [f"{name} {freg(fs)}, {freg(ft)}"]
+
+    if name in ("seb", "seh"):
+        _, destination, source = instruction
+        if destination == 0:
+            return ["nop"]
+        shift = 24 if name == "seb" else 16
+        return [
+            f"sll {reg(destination)}, {reg(source)}, {shift}",
+            f"sra {reg(destination)}, {reg(destination)}, {shift}",
+        ]
+
+    if name == "bitrev":
+        _, destination, source = instruction
+        if destination == 0:
+            return ["nop"]
+
+        temporaries = [index for index in (26, 27, 1, 25, 24, 23, 22, 21) if index not in (destination, source)][:3]
+        current, shifted, mask_register = temporaries
+        lines = [
+            "addiu $sp, $sp, -16",
+            f"sw {reg(current)}, 0($sp)",
+            f"sw {reg(shifted)}, 4($sp)",
+            f"sw {reg(mask_register)}, 8($sp)",
+        ]
+
+        if source == 29:
+            lines.append(f"addiu {reg(current)}, $sp, 16")
+        else:
+            lines.append(f"or {reg(current)}, {reg(source)}, $0")
+
+        for count, mask in (
+            (1, 0x55555555),
+            (2, 0x33333333),
+            (4, 0x0f0f0f0f),
+            (8, 0x00ff00ff),
+            (16, 0x0000ffff),
+        ):
+            lines.extend(load_value(mask_register, mask))
+            lines.extend([
+                f"srl {reg(shifted)}, {reg(current)}, {count}",
+                f"xor {reg(shifted)}, {reg(shifted)}, {reg(current)}",
+                f"and {reg(shifted)}, {reg(shifted)}, {reg(mask_register)}",
+                f"xor {reg(current)}, {reg(current)}, {reg(shifted)}",
+                f"sll {reg(shifted)}, {reg(shifted)}, {count}",
+                f"xor {reg(current)}, {reg(current)}, {reg(shifted)}",
+            ])
+
+        if destination == 29:
+            lines.append(f"sw {reg(current)}, 12($sp)")
+        else:
+            lines.append(f"or {reg(destination)}, {reg(current)}, $0")
+
+        lines.extend([
+            f"lw {reg(current)}, 0($sp)",
+            f"lw {reg(shifted)}, 4($sp)",
+            f"lw {reg(mask_register)}, 8($sp)",
+        ])
+        if destination == 29:
+            lines.append("lw $sp, 12($sp)")
+        else:
+            lines.append("addiu $sp, $sp, 16")
+        return lines
 
     if name == "wsbw":
         _, rd, rt = instruction

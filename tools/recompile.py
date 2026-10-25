@@ -21,10 +21,8 @@ def read_game_code(elf, data, segments, absolute=False):
     for raw_address, _ in read_code(elf):
         address = base + raw_address
         instruction = decode(address, read_word(data, segments, address))
-
         if instruction[0] == "word":
             raise ValueError(f"que porra de instrução é essa em 0x{address:08x}")
-
         code[address] = instruction
         names.add(instruction[0])
 
@@ -127,13 +125,9 @@ def recompile(input_path, output_path):
     elf = input_path.read_bytes()
     absolute = struct.unpack_from("<H", elf, 16)[0] == 2
     data, segments, entry, relocations, references = relocate(elf, base=0 if absolute else 0x00400000)
-    
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
-    
-    code, names, base = read_game_code(
-    elf, data, segments, absolute=absolute
-    )
+    code, names, base = read_game_code(elf, data, segments, absolute=absolute)
 
     import_map = {
         item["stub"]: item
@@ -184,12 +178,12 @@ def recompile(input_path, output_path):
     external = (references["targets"] | direct_targets) - addresses
     unknown = external - set(import_map)
 
-    if unknown:
-        address = min(unknown)
-        raise ValueError(f"o alvo externo 0x{address:08x} não é um import")
+    unsupported_targets = sorted(unknown)
 
     word_locations = {base + offset for offset in references["words"]}
-    jump_tables = find_jump_tables(code, word_locations)
+    jump_tables = find_jump_tables(code, word_locations) if word_locations else {}
+    if not word_locations:
+        print("sem relocations de jump tables")
 
     def emit_at(address, instruction, current_label=label, lower_address=None):
         return emit_instruction(
@@ -237,6 +231,12 @@ def recompile(input_path, output_path):
         for line in emit_at(address, instruction):
             add_line(lines, line)
 
+    for target in unsupported_targets:
+        lines.extend([
+            f"guest_{target:08x}:",
+            "    jr $ra",
+            "    nop",
+        ])
     linked_imports = link_imports(lines, imports)
 
     binary_path = output_path.with_suffix(".bin")
@@ -258,6 +258,7 @@ def recompile(input_path, output_path):
     output_path.write_text("\n".join(lines) + "\n")
     write_map(map_path, map_addresses, label)
 
+    print(f"destinos externosa deveras leviano sem código {len(unsupported_targets)}")
     print(f"o assembly saiu do forno {output_path}")
     print(f"o não binário caiu no prato do carnivoro {binary_path}")
     print(f"o mapa dessa safada ficou em {map_path}")
