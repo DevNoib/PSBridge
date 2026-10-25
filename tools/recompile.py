@@ -13,8 +13,8 @@ from imports import find_module, read_imports, import_symbol, link_imports
 from r5900 import emit
 from relocate import relocate
 
-def read_game_code(elf, data, segments):
-    base = min(vaddr - offset for offset, vaddr, *_ in segments)
+def read_game_code(elf, data, segments, absolute=False):
+    base = 0 if absolute else min(vaddr - offset for offset, vaddr, *_ in segments)
     code = {}
     names = set()
 
@@ -125,10 +125,15 @@ def recompile(input_path, output_path):
     print("recompilando... deixa o cara gozar")
 
     elf = input_path.read_bytes()
-    data, segments, entry, relocations, references = relocate(elf)
+    absolute = struct.unpack_from("<H", elf, 16)[0] == 2
+    data, segments, entry, relocations, references = relocate(elf, base=0 if absolute else 0x00400000)
+    
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
-    code, names, base = read_game_code(elf, data, segments)
+    
+    code, names, base = read_game_code(
+    elf, data, segments, absolute=absolute
+    )
 
     import_map = {
         item["stub"]: item
