@@ -38,6 +38,8 @@
 #define GE_TEXSIZE0 0xb8
 #define GE_TEXMODE 0xc2
 #define GE_TEXFORMAT 0xc3
+#define GE_LOADCLUT 0xc4
+#define GE_TEXENVCOLOR 0xca
 #define GE_CLUTFORMAT 0xc5
 #define GE_TEXWRAP 0xc7
 #define GE_TEXFUNC 0xc9
@@ -88,6 +90,9 @@ typedef struct {
 
 static GeList lists[GE_LIST_LIMIT];
 static GeState state;
+static u8 ge_clut[1024] __attribute__((aligned(4)));
+static u32 ge_clut_entries;
+static int ge_clut_loaded;
 static int next_list_id = 1;
 static int next_callback_id = 1;
 
@@ -248,6 +253,26 @@ static int pixel_offset(int x, int y, int row_bytes, int bytes, int swizzled)
         (byte_x & 15);
 }
 
+static void load_clut(u32 argument)
+{
+    u32 format = state.command[GE_CLUTFORMAT] & 3;
+    u32 entries = (argument & 0x3f) * 8;
+    u32 bytes_per_entry = format == 3 ? 4 : 2;
+    u32 address =
+        (state.command[GE_CLUTADDR] & 0x00fffff0) |
+        ((state.command[GE_CLUTADDRUPPER] << 8) & 0x0f000000);
+    const void *source = ge_pointer(address);
+
+    if (entries > 256)
+        entries = 256;
+    if (!source || !entries)
+        return;
+
+    memcpy(ge_clut, source, entries * bytes_per_entry);
+    ge_clut_entries = entries;
+    ge_clut_loaded = 1;
+}
+
 static u32 palette_color(u32 index)
 {
     u32 format = state.command[GE_CLUTFORMAT] & 3;
@@ -257,19 +282,24 @@ static u32 palette_color(u32 index)
     u32 address;
     const void *palette;
 
-    index = ((index >> shift) & mask) | start;
-    address =
-        (state.command[GE_CLUTADDR] & 0x00fffff0) |
-        ((state.command[GE_CLUTADDRUPPER] << 8) & 0x0f000000);
-    palette = ge_pointer(address);
-
-    if (!palette)
-        return 0;
+    index = (((index >> shift) & mask) | start) & 0xff;
+    if (ge_clut_loaded) {
+        if (index >= ge_clut_entries)
+            return 0;
+        palette = ge_clut;
+    } else {
+        address =
+            (state.command[GE_CLUTADDR] & 0x00fffff0) |
+            ((state.command[GE_CLUTADDRUPPER] << 8) & 0x0f000000);
+        palette = ge_pointer(address);
+        if (!palette)
+            return 0;
+    }
 
     if (format == 3)
-        return ((const u32 *)palette)[index & 0xff];
+        return ((const u32 *)palette)[index];
 
-    return unpack_color(((const u16 *)palette)[index & 0x1ff], format);
+    return unpack_color(((const u16 *)palette)[index], format);
 }
 
 static u32 texture_pixel(int x, int y)
@@ -357,24 +387,49 @@ static u32 texture_pixel(int x, int y)
 static u32 shade_pixel(u32 texture, u32 vertex)
 {
     int function = state.command[GE_TEXFUNC] & 7;
-    int use_alpha = state.command[GE_TEXFUNC] & 0x100;
-    u32 red;
-    u32 green;
-    u32 blue;
-    u32 alpha;
-
-    if (!use_alpha)
-        texture |= 0xff000000;
+    int use_alpha = (state.command[GE_TEXFUNC] & 0x100) != 0;
+    u32 environment = state.command[GE_TEXENVCOLOR];
+    u32 texture_alpha = (texture >> 24) & 0xff;
+    u32 vertex_alpha = (vertex >> 24) & 0xff;
+    u32 output_alpha = vertex_alpha;
+    u32 result = 0;
+    int channel;
 
     if (function == 3)
-        return texture;
+        output_alpha = use_alpha ? texture_alpha : vertex_alpha;
+    else if (function != 1 && use_alpha)
+        output_alpha = (texture_alpha * vertex_alpha) / 255;
 
-    red = (texture & 0xff) * (vertex & 0xff) / 255;
-    green = ((texture >> 8) & 0xff) * ((vertex >> 8) & 0xff) / 255;
-    blue = ((texture >> 16) & 0xff) * ((vertex >> 16) & 0xff) / 255;
-    alpha = (texture >> 24) * (vertex >> 24) / 255;
+    for (channel = 0; channel < 3; channel++) {
+        u32 shift = channel * 8;
+        u32 t = (texture >> shift) & 0xff;
+        u32 v = (vertex >> shift) & 0xff;
+        u32 e = (environment >> shift) & 0xff;
+        u32 c;
 
-    return red | (green << 8) | (blue << 16) | (alpha << 24);
+        switch (function) {
+        case 1:
+            c = use_alpha ? (v * (255 - texture_alpha) + t * texture_alpha) / 255 : t;
+            break;
+        case 2:
+            c = (v * (255 - t) + e * t) / 255;
+            break;
+        case 3:
+            c = t;
+            break;
+        case 4:
+            c = v + t;
+            if (c > 255)
+                c = 255;
+            break;
+        default:
+            c = (v * t) / 255;
+            break;
+        }
+        result |= c << shift;
+    }
+
+    return result | (output_alpha << 24);
 }
 
 static void draw_pixel(int x, int y, u32 color)
@@ -851,12 +906,8 @@ static void draw_sprite(GeVertex first, GeVertex second)
             color = second.color;
 
             if (texture_on) {
-                color = shade_pixel(
-                texture_pixel(u >> 16, v >> 16),
-                color
-            );
-
-          }
+                color = shade_pixel(texture_pixel(u >> 16, v >> 16), color);
+            }
 
 
         draw_pixel(x, y, color);
@@ -1082,6 +1133,8 @@ static void execute_list(GeList *list)
             draw_primitive(argument);
         else if (command == GE_TRANSFERSTART)
             transfer_pixels();
+        else if (command == GE_LOADCLUT)
+            load_clut(argument);
         else if (command == GE_JUMP)
             list->pc = relative_address(argument & 0x00fffffc);
         else if (command == GE_CALL && list->stack_size < GE_STACK_LIMIT) {

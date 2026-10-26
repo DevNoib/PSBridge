@@ -145,6 +145,9 @@ def emit(instruction, label, address):
     if name == "jr":
         source = instruction[1]
 
+        if source == 0:
+            return [".word 0x00000008"]
+
         if source == 31:
             return [f"jr {reg(source)}"]
 
@@ -152,7 +155,7 @@ def emit(instruction, label, address):
     if name == "jalr":
         _, link, source = instruction
         if link == source == 0:
-            return ["jr $0"]
+            return [".word 0x00000009"]
         if link == source:
             raise ValueError(f"jalr com registradores iguais em 0x{address:08x}")
         return resolve_jump(source) + [f"jalr {reg(link)}, {reg(source)}"]

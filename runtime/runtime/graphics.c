@@ -130,7 +130,7 @@ static int start_graphics(void)
     frame_texture.Width = PSP_BUFFER_WIDTH;
     frame_texture.Height = PSP_HEIGHT;
     frame_texture.PSM = GS_PSM_CT16;
-    frame_texture.Filter = GS_FILTER_NEAREST;
+    frame_texture.Filter = GS_FILTER_LINEAR;
     frame_texture.Mem = (u32 *)frame_pixels;
 
     texture_size = gsKit_texture_size(

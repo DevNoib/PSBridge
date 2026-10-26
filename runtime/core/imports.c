@@ -1,5 +1,4 @@
 #include <debug.h>
-#include <delaythread.h>
 #include <stdint.h>
 #include <string.h>
 #include <timer.h>
@@ -171,42 +170,10 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         }
     }
 
-    if (import->library == LIB_AUDIO) {
-        if(import->nid == 0x2d53f36e)
-            DelayThread(20000);
-
-        return 0;
-    }
-
-    if (import->library == LIB_SAS) {
-        if (
-            import->nid == 0x42778a9f ||
-            import->nid == 0x50a14dfc
-        )
-            return 0;
-
-        if (import->nid == 0x07f58c24) {
-            u32 *heights = psbridge_game_pointer((void *)(uintptr_t)a1);
-
-            if (!heights)
-                return -1;
-
-            memset(heights, 0, 32 * sizeof(*heights));
-            return 0;
-        }
-
-        if (import->nid == 0x68a46b95)
-            return 0xffffffff;
-
-        if (import->nid == 0x2c8e6ab3)
-            return 0;
-
-        return 0;
-    }
-       
-    
-    if (import->library == LIB_ATRAC && import->nid == 0x132f1eca)
-        return 0;
+    if (import->library == LIB_AUDIO ||
+        import->library == LIB_SAS ||
+        import->library == LIB_ATRAC)
+        return psbridge_audio(import->library, import->nid, a0, a1, a2, a3, a4);
 
     if (import->library == LIB_DISPLAY)
         return psbridge_display(import->nid, a0, a1, a2, a3);
@@ -230,6 +197,10 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         return psbridge_ge(import->nid, a0, a1, a2, a3);
 
     if (import->library == LIB_THREADMAN) {
+
+        if (import->nid == 0xea748e31) {
+            return 0;
+        }
 
         if (import->nid == 0x8125221d)
             return psbridge_create_mailbox(
