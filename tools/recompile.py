@@ -165,6 +165,40 @@ def read_overlay_code(data):
     return code, words
 
 
+def find_memory_fill(code):
+    found = set()
+
+    for address in code:
+        if (
+            code.get(address) == ("or", 9, 6, 0)
+            and code.get(address + 4) == ("addiu", 7, 6, -1)
+            and code.get(address + 8) == ("or", 8, 4, 0)
+            and code.get(address + 0x18) == ("sb", 5, 8, 0)
+            and code.get(address + 0x2c) == ("jr", 31)
+            and code.get(address + 0x30) == ("or", 2, 4, 0)
+        ):
+            found.add(address)
+
+    return found
+
+
+def add_pointer_translation(lines, register):
+    add_line(lines, "addiu $sp, $sp, -32")
+    add_line(lines, "sw $ra, 28($sp)")
+    add_line(lines, "sw $5, 20($sp)")
+    add_line(lines, "sw $6, 16($sp)")
+    add_line(lines, "sw $7, 12($sp)")
+    add_line(lines, f"or $4, ${register}, $0")
+    add_line(lines, "jal psbridge_game_pointer")
+    add_line(lines, "nop")
+    add_line(lines, "or $4, $2, $0")
+    add_line(lines, "lw $7, 12($sp)")
+    add_line(lines, "lw $6, 16($sp)")
+    add_line(lines, "lw $5, 20($sp)")
+    add_line(lines, "lw $ra, 28($sp)")
+    add_line(lines, "addiu $sp, $sp, 32")
+
+
 def emit_instruction(
     address,
     instruction,
@@ -293,6 +327,7 @@ def recompile(input_path, output_path):
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
     code, names, base = read_game_code(elf, data, segments, absolute=absolute)
+    memory_fill = find_memory_fill(code)
     image_base = min(vaddr - offset for offset, vaddr, *_ in segments)
     overlay = find_overlay(input_path.parent, image_base, len(data))
     overlay_code = {}
@@ -404,6 +439,10 @@ def recompile(input_path, output_path):
             lines.append("guest_entry:")
 
         lines.append(f"{label(address)}:")
+
+        if address in memory_fill:
+            add_pointer_translation(lines, 4)
+
         delay = code.get(address + 4)
         delay_lines = emit_at(address + 4, delay) if delay else []
 
