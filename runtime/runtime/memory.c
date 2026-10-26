@@ -1,10 +1,11 @@
 #include <stdint.h>
+#include <kernel.h>
 #include <string.h>
 
 #include <psbridge.h>
 
 #define HEAP_SIZE 0x13e0000
-#define VIDEO_MEMORY_SIZE 0x200000
+#define VIDEO_MEMORY_SIZE 0x180000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
 #define HEAP_ALLOCATION_LIMIT 96
@@ -43,6 +44,43 @@ static int volatile_locked;
 void *psbridge_video_memory(void)
 {
     return video_memory;
+}
+
+int psbridge_map_game_memory(void)
+{
+    const u32 page_size = 0x100000;
+    const u32 pair_size = page_size * 2;
+    const u32 page_mask = 0x001fe000;
+    const u32 flags = 0x1f;
+    u32 virtual_start;
+    u32 physical_start;
+    u32 mapped_size;
+    u32 offset;
+
+    virtual_start = guest_info.base & ~(pair_size - 1);
+    physical_start = (u32)(uintptr_t)guest_info.memory;
+    physical_start -= guest_info.base - virtual_start;
+
+    if ((physical_start & (page_size - 1)) != 0)
+        return -1;
+
+    mapped_size = guest_info.base - virtual_start + guest_info.memory_size;
+
+    for (offset = 0; offset < mapped_size; offset += pair_size) {
+        u32 physical = physical_start + offset;
+        int result = _SetTLBEntry(
+            31 + offset / pair_size,
+            page_mask,
+            virtual_start + offset,
+            (physical >> 6) | flags,
+            ((physical + page_size) >> 6) | flags
+        );
+
+        if (result < 0)
+            return result;
+    }
+
+    return 0;
 }
 
 void *psbridge_game_pointer(const void *pointer) 

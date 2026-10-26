@@ -26,6 +26,9 @@ int main(void)
     FlushCache(0);
     FlushCache(2);
 
+    if (psbridge_map_game_memory() < 0)
+        return -1;
+
     psbridge_sync_init();
 
     printf("pulando pro jogo\n");

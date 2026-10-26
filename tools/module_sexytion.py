@@ -12,8 +12,8 @@ def add_image(lines, path, data, segments, pointers, label, image_base):
 
     lines.extend([
         '.section .guest_image,"aw",@progbits',
-        ".balign 65536",
-        f".space {image_base & 0xffff}",
+        ".balign 1048576",
+        f".space {image_base & 0xfffff}",
         ".globl guest_memory",
         ".globl guest_file_end",
         "guest_memory:",

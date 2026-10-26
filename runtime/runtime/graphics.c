@@ -95,7 +95,7 @@ static int start_graphics(void)
     if (graphics_ready)
         return 0;
 
-    gs = gsKit_init_global_custom(256 * 1024, 64 * 1024);
+    gs = gsKit_init_global_custom(128 * 1024, 32 * 1024);
 
     if (!gs)
         return -1;

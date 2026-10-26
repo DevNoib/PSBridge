@@ -1,5 +1,5 @@
 SECTIONS {
-    .guest_image ALIGN(64) : {
+    .guest_image ALIGN(0x100000) : {
         *(.guest_image)
     }
 

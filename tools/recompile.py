@@ -103,7 +103,7 @@ def read_embedded_elf(path, position):
     return data, elf_type, entry, segments
 
 
-def find_overlay(root, image_base, image_size):
+def find_overlays(root, image_base, image_size, code_limit=0x12000):
     asset_root = root / "build" / "PSP_GAME"
 
     if not asset_root.is_dir():
@@ -114,6 +114,9 @@ def find_overlay(root, image_base, image_size):
         key=lambda path: ("USRDIR" not in path.parts, str(path)),
     )
     image_end = image_base + image_size
+
+    overlays = []
+    code_size = 0
 
     for path in paths:
         try:
@@ -140,13 +143,19 @@ def find_overlay(root, image_base, image_size):
                                     for _, address, _, memory_size, _, _ in loaded
                                 )
                             ):
-                                return path, position, data, entry, segments
+                                size = sum(file_size for _, _, file_size, _, flags, _ in loaded if flags & 1)
+
+                                if code_size + size > code_limit:
+                                    return overlays
+
+                                overlays.append((path, position, data, entry, segments))
+                                code_size += size
 
                         position = view.find(b"\x7fELF", position + 4)
         except (OSError, ValueError):
             continue
 
-    return None
+    return overlays
 
 
 def read_overlay_code(data):
@@ -163,40 +172,6 @@ def read_overlay_code(data):
         words[address] = word
 
     return code, words
-
-
-def find_memory_fill(code):
-    found = set()
-
-    for address in code:
-        if (
-            code.get(address) == ("or", 9, 6, 0)
-            and code.get(address + 4) == ("addiu", 7, 6, -1)
-            and code.get(address + 8) == ("or", 8, 4, 0)
-            and code.get(address + 0x18) == ("sb", 5, 8, 0)
-            and code.get(address + 0x2c) == ("jr", 31)
-            and code.get(address + 0x30) == ("or", 2, 4, 0)
-        ):
-            found.add(address)
-
-    return found
-
-
-def add_pointer_translation(lines, register):
-    add_line(lines, "addiu $sp, $sp, -32")
-    add_line(lines, "sw $ra, 28($sp)")
-    add_line(lines, "sw $5, 20($sp)")
-    add_line(lines, "sw $6, 16($sp)")
-    add_line(lines, "sw $7, 12($sp)")
-    add_line(lines, f"or $4, ${register}, $0")
-    add_line(lines, "jal psbridge_game_pointer")
-    add_line(lines, "nop")
-    add_line(lines, "or $4, $2, $0")
-    add_line(lines, "lw $7, 12($sp)")
-    add_line(lines, "lw $6, 16($sp)")
-    add_line(lines, "lw $5, 20($sp)")
-    add_line(lines, "lw $ra, 28($sp)")
-    add_line(lines, "addiu $sp, $sp, 32")
 
 
 def emit_instruction(
@@ -258,7 +233,7 @@ def add_line(lines, line):
 
 def add_branch_with_long_delay(lines, address, instruction, delay, label, emit_at):
     likely = instruction[0].endswith("l")
-    taken = f"lower_{address:08x}_taken"
+    taken = f"{label(address)}_taken"
 
     for line in emit_at(address, instruction, lambda _: taken):
         add_line(lines, line)
@@ -313,7 +288,10 @@ def add_jump_with_long_delay(lines, address, instruction, delay, label, emit_at)
         else:
             add_line(lines, f"j {label(instruction[1])}")
     else:
-        add_line(lines, f"jr ${source}")
+        if source == 0:
+            add_line(lines, ".word 0x00000008")
+        else:
+            add_line(lines, f"jr ${source}")
 
     add_line(lines, "nop")
 
@@ -327,16 +305,21 @@ def recompile(input_path, output_path):
     module = find_module(data, segments)
     imports = read_imports(data, segments, module)
     code, names, base = read_game_code(elf, data, segments, absolute=absolute)
-    memory_fill = find_memory_fill(code)
     image_base = min(vaddr - offset for offset, vaddr, *_ in segments)
-    overlay = find_overlay(input_path.parent, image_base, len(data))
-    overlay_code = {}
-    overlay_words = {}
-    overlay_entry = None
+    overlays = []
 
-    if overlay:
+    for overlay in find_overlays(input_path.parent, image_base, len(data)):
         overlay_path, overlay_position, overlay_data, overlay_entry, overlay_segments = overlay
         overlay_code, overlay_words = read_overlay_code(overlay_data)
+        overlays.append((
+            overlay_path,
+            overlay_position,
+            overlay_data,
+            overlay_entry,
+            overlay_segments,
+            overlay_code,
+            overlay_words,
+        ))
 
     import_map = {
         item["stub"]: item
@@ -349,7 +332,6 @@ def recompile(input_path, output_path):
         code.pop(stub + 4, None)
 
     addresses = set(code)
-    overlay_addresses = set(overlay_code)
     image_pointers, pointer_functions = find_image_pointers(
         elf,
         data,
@@ -403,12 +385,6 @@ def recompile(input_path, output_path):
         name = "guest" if address in starts or address not in addresses else "code"
         return f"{name}_{address:08x}"
 
-    def overlay_label(address):
-        if address in overlay_addresses:
-            return f"overlay_0_{address:08x}"
-
-        return label(address)
-
     external = (references["targets"] | direct_targets) - addresses
     unknown = external - set(import_map)
 
@@ -440,9 +416,6 @@ def recompile(input_path, output_path):
 
         lines.append(f"{label(address)}:")
 
-        if address in memory_fill:
-            add_pointer_translation(lines, 4)
-
         delay = code.get(address + 4)
         delay_lines = emit_at(address + 4, delay) if delay else []
 
@@ -471,80 +444,75 @@ def recompile(input_path, output_path):
         for line in emit_at(address, instruction):
             add_line(lines, line)
 
-    overlay_direct_targets = {
-        target
-        for instruction in overlay_code.values()
-        if (target := target_of(instruction)) not in (None, 0)
-    }
-    overlay_external = overlay_direct_targets - overlay_addresses - addresses - set(import_map)
-    unsupported_targets.update(overlay_external)
+    overlay_entries = []
 
-    overlay_references = {
-        "high": {},
-        "low": {},
-        "targets": set(),
-        "words": set(),
-    }
+    for overlay_index, overlay in enumerate(overlays):
+        overlay_path, overlay_position, overlay_data, overlay_entry, overlay_segments, overlay_code, overlay_words = overlay
+        overlay_addresses = set(overlay_code)
 
-    def emit_overlay_at(address, instruction, current_label=overlay_label, lower_address=None):
-        return emit_instruction(
-            address,
-            instruction,
-            current_label,
-            overlay_references,
-            image_base,
-            len(data),
-            lower_address,
-        )
+        def overlay_label(address, index=overlay_index, current=overlay_addresses):
+            if address in current:
+                return f"overlay_{index}_{address:08x}"
 
-    for address in sorted(overlay_code):
-        instruction = overlay_code[address]
-        lines.append(f"{overlay_label(address)}:")
-        delay = overlay_code.get(address + 4)
-        delay_lines = emit_overlay_at(address + 4, delay) if delay else []
+            return label(address)
 
-        if instruction[0] in branch_names and len(delay_lines) > 1:
-            add_branch_with_long_delay(
-                lines,
+        overlay_direct_targets = {
+            target
+            for instruction in overlay_code.values()
+            if (target := target_of(instruction)) not in (None, 0)
+        }
+        overlay_external = overlay_direct_targets - overlay_addresses - addresses - set(import_map)
+        unsupported_targets.update(overlay_external)
+        overlay_references = {
+            "high": {},
+            "low": {},
+            "targets": set(),
+            "words": set(),
+        }
+
+        def emit_overlay_at(address, instruction, current_label=overlay_label, lower_address=None):
+            return emit_instruction(
                 address,
                 instruction,
-                delay,
-                overlay_label,
-                emit_overlay_at,
+                current_label,
+                overlay_references,
+                image_base,
+                len(data),
+                lower_address,
             )
-            continue
 
-        if instruction[0] in ("j", "jal", "jr", "jalr") and len(delay_lines) > 1:
-            add_jump_with_long_delay(
-                lines,
-                address,
-                instruction,
-                delay,
-                overlay_label,
-                emit_overlay_at,
-            )
-            continue
+        for address in sorted(overlay_code):
+            instruction = overlay_code[address]
+            lines.append(f"{overlay_label(address)}:")
+            delay = overlay_code.get(address + 4)
+            delay_lines = emit_overlay_at(address + 4, delay) if delay else []
 
-        for line in emit_overlay_at(address, instruction):
-            add_line(lines, line)
+            if instruction[0] in branch_names and len(delay_lines) > 1:
+                add_branch_with_long_delay(
+                    lines,
+                    address,
+                    instruction,
+                    delay,
+                    overlay_label,
+                    emit_overlay_at,
+                )
+                continue
 
-    for target in sorted(unsupported_targets):
-        lines.extend([
-            f"guest_{target:08x}:",
-            "    jr $ra",
-            "    nop",
-        ])
-    linked_imports = link_imports(lines, imports)
+            if instruction[0] in ("j", "jal", "jr", "jalr") and len(delay_lines) > 1:
+                add_jump_with_long_delay(
+                    lines,
+                    address,
+                    instruction,
+                    delay,
+                    overlay_label,
+                    emit_overlay_at,
+                )
+                continue
 
-    binary_path = output_path.with_suffix(".bin")
-    map_path = output_path.with_suffix(".map")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    binary_path.write_bytes(data)
+            for line in emit_overlay_at(address, instruction):
+                add_line(lines, line)
 
-    overlay_map_addresses = set()
-
-    if overlay:
-        overlay_map_addresses.update(overlay_addresses)
+        overlay_map_addresses = set(overlay_addresses)
 
         for _, address, file_size, _, _, _ in overlay_segments:
             start = address
@@ -561,12 +529,26 @@ def recompile(input_path, output_path):
                 elif value in addresses:
                     map_addresses.add(value)
 
+        overlay_entries.extend(
+            (address, overlay_words[address], overlay_label(address))
+            for address in sorted(overlay_map_addresses)
+            if address in overlay_words
+        )
+
+    for target in sorted(unsupported_targets):
+        lines.extend([
+            f"guest_{target:08x}:",
+            "    jr $ra",
+            "    nop",
+        ])
+    linked_imports = link_imports(lines, imports)
+
+    binary_path = output_path.with_suffix(".bin")
+    map_path = output_path.with_suffix(".map")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_bytes(data)
+
     add_map(lines, map_addresses, label)
-    overlay_entries = [
-        (address, overlay_words[address], overlay_label(address))
-        for address in sorted(overlay_map_addresses)
-        if address in overlay_words
-    ]
     add_overlay_map(lines, overlay_entries)
     image_words = dict(references["words"])
     image_words.update(image_pointers)
@@ -605,7 +587,7 @@ def recompile(input_path, output_path):
     print(f"tabelas de salto que pararam de se esconder {len(jump_tables)}")
     print(f"endereços que não vão mais se perder no mapa {len(map_addresses)}")
     print(f"entradas de overlay que acharam o rumo {len(overlay_entries)}")
-    if overlay:
+    for overlay_path, overlay_position, *_ in overlays:
         print(f"overlay recompilado {overlay_path} 0x{overlay_position:x}")
     print(f"imports amarrados na nega {linked_imports}")
     print(f"dados do jogo no pacote {file_size} bytes")

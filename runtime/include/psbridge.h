@@ -26,6 +26,7 @@ int psbridge_call_guest(void *entry, void *argument);
 int psbridge_call_callback(void *entry, u32 count, u32 argument, u32 common);
 
 void *psbridge_game_pointer(const void *pointer);
+int psbridge_map_game_memory(void);
 void *psbridge_video_memory(void);
 int psbridge_controller_read(void *output, int count);
 int psbridge_utility(u32 nid, void *argument);
