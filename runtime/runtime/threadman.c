@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <timer.h>
 
 #include "psbridge.h"
 
@@ -26,15 +27,6 @@ typedef struct {
 } PspThread;
 
 typedef struct {
-    int lock_level;
-    int lock_thread;
-    int attributes;
-    int waiting_threads;
-    int uid;
-    int padding[3];
-} PspLwMutex;
-
-typedef struct {
     int used;
     int uid;
     int semaphore;
@@ -55,10 +47,11 @@ extern int psbridge_call_thread(
 );
 
 static PspThread threads[THREAD_LIMIT];
-static int next_lwmutex_uid = 0x1000;
-
 static PspMailbox mailboxes[MAILBOX_LIMIT];
 static int next_mailbox_uid = 0x3000;
+static u32 mailbox_send_count;
+static u32 mailbox_receive_count;
+static u32 mailbox_timeout_count;
 
 static unsigned char thread_stacks[THREAD_LIMIT] [THREAD_STACK_SIZE]
     __attribute__((aligned(16)));
@@ -106,7 +99,11 @@ static void run_thread(void *arg)
     kernel_work[0xfc / 4] = 0xffffffff;
     initial_stack[0] = thread->uid;
 
-    printf("thread run uid=%d entry=%08x\n", thread->uid, (u32)(uintptr_t)thread->entry);
+    printf(
+        "[thread] entrou uid=%d entry=%08x\n",
+        thread->uid,
+        (u32)(uintptr_t)thread->entry
+    );
 
     scr_printf(
         "entrando na thread %d em 0x%08x\n",
@@ -121,7 +118,7 @@ static void run_thread(void *arg)
         thread->kernel_work
     );
 
-    printf("thread return uid=%d result=%d\n", thread->uid, result);
+    printf("[thread] saiu uid=%d resultado=%d\n", thread->uid, result);
 
     scr_printf("thread %d gozou ops quero dizer voltou com %d\n", thread->uid, result);
 
@@ -172,7 +169,12 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
             THREAD_STACK_SIZE -
             KERNEL_STACK_SIZE;
 
-        printf("thread create uid=%d entry=%08x priority=%d\n", threads[index].uid, (u32)(uintptr_t)entry, priority);
+        printf(
+            "[thread] criou uid=%d entry=%08x prioridade=%d\n",
+            threads[index].uid,
+            (u32)(uintptr_t)entry,
+            priority
+        );
 
         scr_printf("thread criada na puta que pariu %d\n", threads[index].uid);
 
@@ -214,61 +216,9 @@ int psbridge_start_thread(int uid, u32 arg_size, void *arg)
     if (result < 0)
         return result;
 
-    printf("thread start uid=%d size=%u\n", uid, arg_size);
+    printf("[thread] iniciou uid=%d argumentos=%u\n", uid, arg_size);
 
     scr_printf("thread iniciada uid %d\n", uid);
-
-    return 0;
-}
-
-int psbridge_create_lwmutex(void *workarea, u32 attributes, int initial_count)
-{
-    PspLwMutex *mutex = psbridge_game_pointer(workarea);
-
-    if (!mutex)
-        return -1;
-
-    memset(mutex, 0, sizeof(*mutex));
-    mutex->lock_level = initial_count;
-    mutex->attributes = attributes;
-    mutex->uid = next_lwmutex_uid++;
-    return 0;
-}
-
-int psbridge_delete_lwmutex(void *workarea)
-{
-    PspLwMutex *mutex = psbridge_game_pointer(workarea);
-
-    if (!mutex)
-        return -1;
-
-    memset(mutex, 0, sizeof(*mutex));
-    return 0;
-}
-
-int psbridge_lock_lwmutex(void *workarea, int count)
-{
-    PspLwMutex *mutex = psbridge_game_pointer(workarea);
-
-    if (!mutex || count <= 0)
-        return -1;
-
-    mutex->lock_level += count;
-    mutex->lock_thread = 1;
-    return 0;
-}
-
-int psbridge_unlock_lwmutex(void *workarea, int count)
-{
-    PspLwMutex *mutex = psbridge_game_pointer(workarea);
-
-    if (!mutex || count <= 0 || mutex->lock_level < count)
-        return -1;
-
-    mutex->lock_level -= count;
-
-    if (!mutex->lock_level)
-        mutex->lock_thread = 0;
 
     return 0;
 }
@@ -319,10 +269,6 @@ int psbridge_create_mailbox(const char *name, u32 attributes, void *options)
         mailbox->semaphore = semaphore;
         mailbox->lock = lock;
 
-        printf("mbx criou %d\n", mailbox->uid);
-
-        
-
         return mailbox->uid;
 
 
@@ -360,12 +306,42 @@ int psbridge_send_mailbox(int uid, void *message)
 
     mailbox->count++;
 
-    printf("mbx send uid=%d message=%08x count=%d thread=%d\n", uid, (u32)(uintptr_t)message, mailbox->count, GetThreadId());
+    mailbox_send_count++;
 
-    SignalSema(mailbox->lock);
-    SignalSema(mailbox->semaphore);
+    if (mailbox_send_count <= 16 || !(mailbox_send_count % 256)) {
+        const u32 *packet = psbridge_game_pointer(message);
 
-    return 0;
+        printf(
+            "[mbx] enviou n=%u uid=%d mensagem=%08x fila=%d thread=%d",
+            mailbox_send_count,
+            uid,
+            (u32)(uintptr_t)message,
+            mailbox->count,
+            GetThreadId()
+        );
+
+        if (packet)
+            printf(" dados=%08x:%08x:%08x:%08x", packet[0], packet[1], packet[2], packet[3]);
+
+        printf("\n");
+    }
+
+    result = SignalSema(mailbox->lock);
+
+    if (result < 0)
+        return result;
+
+    result = SignalSema(mailbox->semaphore);
+    return result < 0 ? result : 0;
+}
+
+static u64 mailbox_time(void)
+{
+    u32 seconds;
+    u32 microseconds;
+
+    TimerBusClock2USec(GetTimerSystemTime(), &seconds, &microseconds);
+    return (u64)seconds * 1000000 + microseconds;
 }
 
 int psbridge_receive_mailbox(int uid, void *output, void *timeout)
@@ -375,28 +351,57 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
     u32 *remaining = psbridge_game_pointer(timeout);
     int result;
 
-    if (!mailbox || !destination)
+    if (!mailbox || !destination || (timeout && !remaining))
         return -1;
 
     if (!timeout) {
         result = WaitSema(mailbox->semaphore);
     } else {
-        if (!remaining)
-            return -1;
+        u32 limit = *remaining;
+        u64 started = mailbox_time();
 
-        result = PollSema(mailbox->semaphore);
+        for (;;) {
+            u64 elapsed;
+            u32 delay;
 
-        if (result < 0 && *remaining) {
-            DelayThread(*remaining);
             result = PollSema(mailbox->semaphore);
-            *remaining = 0;
+
+            if (result >= 0)
+                break;
+
+            elapsed = mailbox_time() - started;
+
+            if (elapsed >= limit)
+                break;
+
+            delay = limit - (u32)elapsed;
+
+            if (delay > 1000)
+                delay = 1000;
+
+            DelayThread(delay);
+        }
+
+        {
+            u64 elapsed = mailbox_time() - started;
+            *remaining = elapsed >= limit ? 0 : limit - (u32)elapsed;
         }
     }
 
-    if (result < 0)
-        return -1;
+    if (result < 0) {
+        mailbox_timeout_count++;
 
-    printf("mbx ready uid=%d count=%d thread=%d\n", uid, mailbox->count, GetThreadId());
+        if (mailbox_timeout_count <= 8 || !(mailbox_timeout_count % 1024))
+            printf(
+                "[mbx] espera falhou n=%u uid=%d thread=%d timeout=%08x\n",
+                mailbox_timeout_count,
+                uid,
+                GetThreadId(),
+                (u32)(uintptr_t)timeout
+            );
+
+        return -1;
+    }
 
     result = WaitSema(mailbox->lock);
 
@@ -415,17 +420,48 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
 
     mailbox->count--;
 
-    printf(
-        "mbl recebou uid %d msg %08x fila %d thread %d\n",
-        uid,
-        *destination,
-        mailbox->count,
-        GetThreadId()
-    );
+    mailbox_receive_count++;
+
+    if (mailbox_receive_count <= 16 || !(mailbox_receive_count % 256))
+        printf(
+            "[mbx] recebeu n=%u uid=%d mensagem=%08x fila=%d thread=%d\n",
+            mailbox_receive_count,
+            uid,
+            *destination,
+            mailbox->count,
+            GetThreadId()
+        );
 
     SignalSema(mailbox->lock);
 
     return 0;
+}
+
+void *psbridge_thread_kernel_work(void)
+{
+    extern u32 main_kernel_work[];
+    int current = GetThreadId();
+    int index;
+
+    for (index = 0; index < THREAD_LIMIT; index++) {
+        if (threads[index].used && threads[index].thread_id == current)
+            return threads[index].kernel_work;
+    }
+
+    return main_kernel_work;
+}
+
+int psbridge_psp_thread_uid(void)
+{
+    int current = GetThreadId();
+    int index;
+
+    for (index = 0; index < THREAD_LIMIT; index++) {
+        if (threads[index].used && threads[index].thread_id == current)
+            return threads[index].uid;
+    }
+
+    return 1;
 }
 
 int psbridge_delete_mailbox(int uid)

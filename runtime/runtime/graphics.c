@@ -1,9 +1,11 @@
 #include <dmaKit.h>
+#include <delaythread.h>
 #include <gsKit.h>
 #include <kernel.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
+#include <timer.h>
 
 #include "psbridge.h"
 
@@ -20,6 +22,65 @@ static const void *framebuffer;
 static int framebuffer_width = PSP_BUFFER_WIDTH;
 static int framebuffer_format = 3;
 static int graphics_ready;
+static u64 vblank_epoch;
+static int vblank_ready;
+static u32 display_wait_count;
+static u32 framebuffer_count;
+
+#define VBLANK_DURATION_US 16683u
+
+static u64 current_time(void)
+{
+    u32 seconds;
+    u32 microseconds;
+
+    TimerBusClock2USec(GetTimerSystemTime(), &seconds, &microseconds);
+    return (u64)seconds * 1000000 + microseconds;
+}
+
+static u32 current_vcount(void)
+{
+    u64 now = current_time();
+
+    if (!vblank_ready) {
+        vblank_epoch = now;
+        vblank_ready = 1;
+    }
+
+    return (u32)((now - vblank_epoch) / VBLANK_DURATION_US);
+}
+
+static void wait_vblank(u32 cycles, int use_callbacks)
+{
+    u64 now = current_time();
+    u64 current;
+    u64 target;
+
+    if (!vblank_ready) {
+        vblank_epoch = now;
+        vblank_ready = 1;
+    }
+
+    if (!cycles)
+        cycles = 1;
+    if (cycles > 1000)
+        cycles = 1000;
+
+    current = (now - vblank_epoch) / VBLANK_DURATION_US;
+    target = vblank_epoch + (current + cycles) * VBLANK_DURATION_US;
+
+    while ((now = current_time()) < target) {
+        u64 remaining = target - now;
+
+        if (remaining > 3000)
+            remaining = 3000;
+
+        if (use_callbacks)
+            psbridge_delay_thread((u32)remaining, 1);
+        else
+            DelayThread((int)remaining);
+    }
+}
 
 static u16 gs_color(u8 red, u8 green, u8 blue, u8 alpha)
 {
@@ -194,40 +255,10 @@ static void copy_framebuffer(void)
 
 static void present(void)
 {
-    static u32 frame_count;
-    const u32 *pixels;
-    u32 hash = 2166136261u;
-    u32 colored = 0;
-    u32 index;
-
     if (start_graphics() < 0)
         return;
 
     copy_framebuffer();
-
-    frame_count++;
-
-    if (!(frame_count % 60)) {
-        pixels = framebuffer_pointer(framebuffer);
-
-        if (pixels) {
-            for (index = 0; index < PSP_WIDTH * PSP_HEIGHT; index++) {
-                hash ^= pixels[index];
-                hash *= 16777619u;
-                colored += pixels[index] != 0;
-            }
-        }
-
-        printf(
-            "frame %u buffer %08x formato %d largura %d hash %08x cor %u\n",
-            frame_count,
-            (u32)(uintptr_t)framebuffer,
-            framebuffer_format,
-            framebuffer_width,
-            hash,
-            colored
-        );
-    }
 
     FlushCache(0);
 
@@ -259,7 +290,6 @@ static void present(void)
     );
 
     gsKit_queue_exec(gs);
-    gsKit_finish();
     gsKit_sync_flip(gs);
 }
 
@@ -271,17 +301,52 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
     }
 
     if (nid == 0x289d82fe) {
-        framebuffer = (const void *)a0;
+        framebuffer = (const void *)(uintptr_t)a0;
         framebuffer_width = a1;
         framebuffer_format = a2;
+        framebuffer_count++;
+
+        if (framebuffer_count <= 8 || !(framebuffer_count % 256))
+            printf(
+                "[display] buffer n=%u endereco=%08x largura=%u formato=%u sync=%u thread=%d\n",
+                framebuffer_count,
+                a0,
+                a1,
+                a2,
+                a3,
+                GetThreadId()
+            );
+
+        (void)a3;
         return 0;
     }
 
-    if (nid == 0x984c27e7 || nid == 0x46f186c3) {
+    if (nid == 0x9c6eaad7)
+        return current_vcount();
+
+    if (
+        nid == 0x984c27e7 ||
+        nid == 0x46f186c3 ||
+        nid == 0x77ed8b3a
+    ) {
+        u32 cycles = nid == 0x77ed8b3a ? a0 : 1;
+
         present();
+        wait_vblank(cycles, nid != 0x984c27e7);
+        display_wait_count++;
+
+        if (display_wait_count <= 8 || !(display_wait_count % 120))
+            printf(
+                "[display] vblank n=%u nid=%08x contador=%u buffer=%08x thread=%d\n",
+                display_wait_count,
+                nid,
+                current_vcount(),
+                (u32)(uintptr_t)framebuffer,
+                GetThreadId()
+            );
+
         return 0;
     }
 
-    (void)a3;
     return 0;
 }

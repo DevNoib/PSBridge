@@ -2,7 +2,7 @@ BUILD_DIR = ../build
 RUNTIME_BUILD = $(BUILD_DIR)/runtime
 MAIN_OBJ = $(RUNTIME_BUILD)/main.o
 CORE_OBJS = $(addprefix $(RUNTIME_BUILD)/core/,imports.o guest.o vfpu_entry.o)
-API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,controller.o ge.o graphics.o io.o memory.o threadman.o utility.o vfpu.o)
+API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,controller.o ge.o graphics.o io.o memory.o threadman.o lwmutex.o sync.o utility.o vfpu.o)
 RUNTIME_OBJS = $(MAIN_OBJ) $(CORE_OBJS) $(API_OBJS)
 
 EE_BIN = $(BUILD_DIR)/psbridge.elf

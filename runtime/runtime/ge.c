@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <kernel.h>
 
 #include "psbridge.h"
 
@@ -90,6 +91,7 @@ static GeList lists[GE_LIST_LIMIT];
 static GeState state;
 static int next_list_id = 1;
 static int next_callback_id = 1;
+static u32 ge_execute_count;
 
 static int align_value(int value, int alignment)
 {
@@ -953,38 +955,11 @@ static void draw_primitive(u32 argument)
     int count = argument & 0xffff;
     VertexLayout layout;
     int index;
-    GeVertex first;
-    GeVertex second;
-
-    printf(
-        "ge prim %d count %d type %08x vert %08x index %08x frame %08x width %08x\n",
-        primitive,
-        count,
-        type,
-        state.vertex_address,
-        state.index_address,
-        buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH),
-        state.command[GE_VADDR_WIDTH]
-    );
 
     if (!(type & (1 << 23)) || count <= 0)
         return;
 
     layout = vertex_layout(type);
-    first = read_vertex(0, type, layout);
-    second = read_vertex(1, type, layout);
-
-    printf(
-        "ge vertices %.2f %.2f %.2f %.2f cores %08x %08x scissor %08x %08x\n",
-        first.x,
-        first.y,
-        second.x,
-        second.y,
-        first.color,
-        second.color,
-        state.command[GE_SCISSOR1],
-        state.command[GE_SCISSOR2]
-    );
 
     if (primitive == 6) {
         for (index = 0; index + 1 < count; index += 2)
@@ -1068,9 +1043,8 @@ static GeList *find_list(int id)
 
 static void execute_list(GeList *list)
 {
-    int commands = 0;
-    int primitives = 0;
     u32 start = list->pc;
+    int commands = 0;
 
     while (!list->done && commands++ < GE_COMMAND_LIMIT) {
         const u32 *instruction;
@@ -1107,10 +1081,8 @@ static void execute_list(GeList *list)
             state.offset_address = argument << 8;
         else if (command == GE_ORIGIN)
             state.offset_address = list->pc - 4;
-        else if (command == GE_PRIM) {
-            primitives++;
+        else if (command == GE_PRIM)
             draw_primitive(argument);
-        }
         else if (command == GE_TRANSFERSTART)
             transfer_pixels();
         else if (command == GE_JUMP)
@@ -1132,14 +1104,20 @@ static void execute_list(GeList *list)
     if (commands >= GE_COMMAND_LIMIT)
         list->done = 1;
 
-    printf(
-        "ge lista %08x pc %08x comandos %d primitivas %d fim %d\n",
-        start,
-        list->pc,
-        commands,
-        primitives,
-        list->done
-    );
+    ge_execute_count++;
+
+    if (ge_execute_count <= 16 || !(ge_execute_count % 128) || commands >= GE_COMMAND_LIMIT)
+        printf(
+            "[ge] executou n=%u id=%d inicio=%08x fim=%08x comandos=%d pronto=%d stall=%08x thread=%d\n",
+            ge_execute_count,
+            list->id,
+            start,
+            list->pc,
+            commands,
+            list->done,
+            list->stall,
+            GetThreadId()
+        );
 }
 
 static int enqueue_list(u32 address, u32 stall)
@@ -1176,12 +1154,6 @@ u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
 {
     GeList *list;
     int index;
-
-    printf(
-        "ge nid %08x a0 %08x a1 %08x\n",
-        nid,
-        a0,a1
-    );
 
     if (nid == 0xe47e40e4)
         return (u32)(uintptr_t)psbridge_video_memory();

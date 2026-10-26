@@ -23,6 +23,7 @@ extern const u32 psp_import_count;
 
 int psbridge_start(void);
 int psbridge_call_guest(void *entry, void *argument);
+int psbridge_call_callback(void *entry, u32 count, u32 argument, u32 common);
 
 void *psbridge_game_pointer(const void *pointer);
 void *psbridge_video_memory(void);
@@ -47,7 +48,10 @@ int psbridge_delete_fpl(int uid);
 int psbridge_create_thread(const char *name, void *entry, int priority, int stack_size, u32 attributes, void *options);
 
 int psbridge_start_thread(int uid, u32 arg_size, void *arg);
+int psbridge_psp_thread_uid(void);
+void *psbridge_thread_kernel_work(void);
 int psbridge_create_lwmutex(void *workarea, u32 attributes, int initial_count);
+int psbridge_lock_lwmutex_ex(void *workarea, int count, void *timeout, int use_callbacks, int try_only);
 int psbridge_delete_lwmutex(void *workarea);
 int psbridge_lock_lwmutex(void *workarea, int count);
 int psbridge_unlock_lwmutex(void *workarea, int count);
@@ -65,6 +69,9 @@ u32 psbridge_umd_state(void);
 int psbridge_umd_activate(int mode, const char *name);
 int psbridge_umd_deactivate(int mode, const char *name);
 int psbridge_umd_wait(u32 state);
+int psbridge_umd_wait_cb(u32 state, u32 timeout);
+int psbridge_umd_register_callback(int uid);
+int psbridge_umd_unregister_callback(int uid);
 
 
 /*
@@ -77,6 +84,20 @@ int psbridge_create_mailbox(const char *name, u32 attributes, void *options);
 int psbridge_send_mailbox(int uid, void *message);
 int psbridge_receive_mailbox(int uid, void *output, void *timeout);
 int psbridge_delete_mailbox(int uid);
+
+int psbridge_sync_init(void);
+int psbridge_create_event(u32 attributes, u32 initial);
+int psbridge_delete_event(int uid);
+int psbridge_set_event(int uid, u32 bits);
+int psbridge_clear_event(int uid, u32 mask);
+int psbridge_wait_event(int uid, u32 bits, u32 mode, void *output, void *timeout, int use_callbacks, int polling);
+int psbridge_create_callback(u32 function, u32 common);
+int psbridge_delete_callback(int uid);
+int psbridge_notify_callback(int uid, u32 argument);
+int psbridge_cancel_callback(int uid);
+int psbridge_callback_count(int uid);
+int psbridge_check_callbacks(void);
+int psbridge_delay_thread(u32 delay, int use_callbacks);
 
 
 #endif

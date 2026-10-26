@@ -8,9 +8,6 @@
 
 #include <psbridge.h>
 
-static int next_callback_uid = 0x1800;
-static int next_event_uid = 0x2000;
-
 static u64 system_time(void)
 {
     u32 seconds;
@@ -43,6 +40,8 @@ static u64 system_time(void)
 #define LIB_SUSPEND 0x1707c132
 #define LIB_SAS 0x1d46fbf4
 #define LIB_ATRAC 0x75263ea8
+
+static u32 delay_count;
 
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
 {
@@ -127,11 +126,17 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         if (import->nid == 0xd13bde95)
             return 0x10000;
 
-        if (import->nid == 0xbea46419)
-            return psbridge_lock_lwmutex((void *)a0, (int)a1);
+        if (import->nid == 0xbea46419 || import->nid == 0x1fc64e09)
+            return psbridge_lock_lwmutex_ex(
+                (void *)a0,
+                (int)a1,
+                (void *)(uintptr_t)a2,
+                import->nid == 0x1fc64e09,
+                0
+            );
 
-        if (import->nid == 0x1fc64e09)
-            return psbridge_lock_lwmutex((void *)a0, (int)a1);
+        if (import->nid == 0xdc692ee3)
+            return psbridge_lock_lwmutex_ex((void *)a0, (int)a1, NULL, 0, 1);
 
         if (import->nid == 0x15b6446b)
             return psbridge_unlock_lwmutex((void *)a0, (int)a1);
@@ -239,25 +244,73 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             return psbridge_call_guest((void *)a1, (void *)a2);
 
         if (import->nid == 0xe81caf8f)
-            return next_callback_uid++;
+            return psbridge_create_callback(a1, a2);
+
+        if (import->nid == 0xedba5844)
+            return psbridge_delete_callback((int)a0);
+
+        if (import->nid == 0xc11ba8c4)
+            return psbridge_notify_callback((int)a0, a1);
+
+        if (import->nid == 0xba4051d6)
+            return psbridge_cancel_callback((int)a0);
+
+        if (import->nid == 0x2a3d44ff)
+            return psbridge_callback_count((int)a0);
+
+        if (import->nid == 0x349d6d6c)
+            return psbridge_check_callbacks();
 
         if (import->nid == 0x55c20a00)
-            return next_event_uid++;
+            return psbridge_create_event(a1, a2);
 
-        if (
-            import->nid == 0x1fb15a32 ||
-            import->nid == 0x402fcf22 ||
-            import->nid == 0x812346e4 ||
-            import->nid == 0xef9e4c70
-        )
-            return 0;
+        if (import->nid == 0xef9e4c70)
+            return psbridge_delete_event((int)a0);
+
+        if (import->nid == 0x1fb15a32)
+            return psbridge_set_event((int)a0, a1);
+
+        if (import->nid == 0x812346e4)
+            return psbridge_clear_event((int)a0, a1);
+
+        if (import->nid == 0x402fcf22 || import->nid == 0x328c546a)
+            return psbridge_wait_event(
+                (int)a0,
+                a1,
+                a2,
+                (void *)(uintptr_t)a3,
+                (void *)(uintptr_t)a4,
+                import->nid == 0x328c546a,
+                0
+            );
+
+        if (import->nid == 0x30fd48f0)
+            return psbridge_wait_event(
+                (int)a0,
+                a1,
+                a2,
+                (void *)(uintptr_t)a3,
+                NULL,
+                0,
+                1
+            );
 
         if (
             import->nid == 0xceadeb47 ||
             import->nid == 0x68da9e36
         ) {
-            DelayThread((int)a0);
-            return 0;
+            delay_count++;
+
+            if (delay_count <= 16 || !(delay_count % 2048))
+                printf(
+                    "[delay] n=%u nid=%08x us=%u thread=%d\n",
+                    delay_count,
+                    import->nid,
+                    a0,
+                    GetThreadId()
+                );
+
+            return psbridge_delay_thread(a0, import->nid == 0x68da9e36);
         }
 
         if (import->nid == 0x369ed59d)
@@ -355,14 +408,17 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
         if (import->nid == 0xe83742ba)
             return psbridge_umd_deactivate((int)a0, (const char *)a1);
 
-        if (
-            import->nid == 0x8ef08fce ||
-            import->nid == 0x4a9e5e29
-        )
+        if (import->nid == 0x8ef08fce)
             return psbridge_umd_wait(a0);
 
+        if (import->nid == 0x4a9e5e29)
+            return psbridge_umd_wait_cb(a0, a1);
+
         if (import->nid == 0xaee7404d)
-            return 0;
+            return psbridge_umd_register_callback((int)a0);
+
+        if (import->nid == 0xbd2bde07)
+            return psbridge_umd_unregister_callback((int)a0);
     }
 
     if (import->library == LIB_SUSPEND) {

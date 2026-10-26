@@ -251,3 +251,50 @@ thread_gp_ready:
     jr $ra
     nop
     .end psbridge_call_thread
+
+    .globl psbridge_call_callback
+    .ent psbridge_call_callback
+psbridge_call_callback:
+    addiu $sp, $sp, -96
+    sd $ra, 88($sp)
+    sd $gp, 80($sp)
+    sd $26, 72($sp)
+    sw $4, 64($sp)
+    sw $5, 60($sp)
+    sw $6, 56($sp)
+    sw $7, 52($sp)
+
+    lui $gp, %hi(_gp)
+    addiu $gp, $gp, %lo(_gp)
+    jal psbridge_thread_kernel_work
+    nop
+    or $26, $2, $0
+
+    lui $8, %hi(guest_info)
+    addiu $8, $8, %lo(guest_info)
+    lw $9, 0($8)
+    lw $10, 4($8)
+    lw $gp, 16($8)
+    beq $gp, $0, callback_gp_ready
+    nop
+    subu $gp, $gp, $10
+    addu $gp, $gp, $9
+
+callback_gp_ready:
+    lw $25, 64($sp)
+    jal psbridge_resolve_guest
+    nop
+    or $12, $25, $0
+    lw $4, 60($sp)
+    lw $5, 56($sp)
+    lw $6, 52($sp)
+    jalr $ra, $12
+    nop
+
+    ld $gp, 80($sp)
+    ld $26, 72($sp)
+    ld $ra, 88($sp)
+    addiu $sp, $sp, 96
+    jr $ra
+    nop
+    .end psbridge_call_callback

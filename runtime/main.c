@@ -26,6 +26,8 @@ int main(void)
     FlushCache(0);
     FlushCache(2);
 
+    psbridge_sync_init();
+
     printf("pulando pro jogo\n");
     int result = psbridge_start();
     printf("o jogo voltou com %d\n", result);

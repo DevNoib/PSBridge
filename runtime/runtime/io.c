@@ -1,10 +1,12 @@
 #include <fcntl.h>
+#include <delaythread.h>
 #include <kernel.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <timer.h>
 
 #include "psbridge.h"
 
@@ -35,10 +37,13 @@ typedef struct {
 static UmdHandle umd_handles[UMD_HANDLES];
 static int umd_active = 1;
 static int umd_present = -1;
+static int umd_callback = -1;
 
 static UmdFile umd_files[UMD_FILES];
 static u32 next_umd_sector;
 static int umd_file_lock = -1;
+static u32 lbn_open_count;
+static u32 lbn_read_count;
 
 typedef struct {
     u16 year;
@@ -317,6 +322,10 @@ int psbridge_umd_activate(int mode, const char *name)
         return -1;
 
     umd_active = 1;
+
+    if (umd_callback >= 0)
+        psbridge_notify_callback(umd_callback, psbridge_umd_state());
+
     return 0;
 }
 
@@ -328,12 +337,67 @@ int psbridge_umd_deactivate(int mode, const char *name)
         return -1;
 
     umd_active = 0;
+
+    if (umd_callback >= 0)
+        psbridge_notify_callback(umd_callback, psbridge_umd_state());
+
     return 0;
 }
 
 int psbridge_umd_wait(u32 state)
 {
     return (psbridge_umd_state() & state) ? 0 : -1;
+}
+
+int psbridge_umd_register_callback(int uid)
+{
+    if (psbridge_callback_count(uid) < 0)
+        return -1;
+
+    umd_callback = uid;
+    return 0;
+}
+
+int psbridge_umd_unregister_callback(int uid)
+{
+    if (umd_callback != uid)
+        return -1;
+
+    umd_callback = -1;
+    return 0;
+}
+
+int psbridge_umd_wait_cb(u32 state, u32 timeout)
+{
+    u32 seconds;
+    u32 microseconds;
+    u32 start_seconds;
+    u32 start_microseconds;
+    u64 started;
+
+    TimerBusClock2USec(
+        GetTimerSystemTime(),
+        &start_seconds,
+        &start_microseconds
+    );
+
+    started = (u64)start_seconds * 1000000 + start_microseconds;
+
+    for (;;) {
+        u64 now;
+
+        if (psbridge_umd_state() & state)
+            return 0;
+
+        psbridge_check_callbacks();
+        TimerBusClock2USec(GetTimerSystemTime(), &seconds, &microseconds);
+        now = (u64)seconds * 1000000 + microseconds;
+
+        if (timeout && now - started >= timeout)
+            return (int)0x800201a8u;
+
+        DelayThread(1000);
+    }
 }
 
 static int open_flags(int flags)
@@ -364,8 +428,8 @@ int psbridge_file_open(const char *path, int flags, int mode)
     char translated[PATH_SIZE];
     UmdFile *file;
     UmdHandle *handle;
-    u64 sector;
-    u64 size;
+    u64 sector = 0;
+    u64 size = 0;
     u64 offset;
     int descriptor;
     int lbn;
@@ -386,18 +450,39 @@ int psbridge_file_open(const char *path, int flags, int mode)
     lbn = lbn_path(path, &sector, &size);
 
     if (lbn) {
-        if (lbn < 0 || (flags & 3) == 2 || (flags & 3) == 3)
+        if (lbn < 0 || (flags & 3) == 2 || (flags & 3) == 3) {
+            printf(
+                "[lbn] abertura invalida setor=%llu tamanho=%llu flags=%08x\n",
+                (unsigned long long)sector,
+                (unsigned long long)size,
+                flags
+            );
             return -1;
+        }
 
         file = find_umd_file(sector);
 
-        if (!file)
+        if (!file) {
+            printf(
+                "[lbn] setor sem arquivo setor=%llu tamanho=%llu\n",
+                (unsigned long long)sector,
+                (unsigned long long)size
+            );
             return -1;
+        }
 
         offset = (sector - file->first_sector) * 2048;
 
-        if (offset > file->size || size > file->size - offset)
+        if (offset > file->size || size > file->size - offset) {
+            printf(
+                "[lbn] fora do arquivo setor=%llu tamanho=%llu offset=%llu limite=%llu\n",
+                (unsigned long long)sector,
+                (unsigned long long)size,
+                (unsigned long long)offset,
+                (unsigned long long)file->size
+            );
             return -1;
+        }
 
         descriptor = new_umd_handle();
 
@@ -408,6 +493,20 @@ int psbridge_file_open(const char *path, int flags, int mode)
         handle->file_index = file - umd_files;
         handle->start = offset;
         handle->length = size;
+
+        lbn_open_count++;
+
+        if (lbn_open_count <= 16 || !(lbn_open_count % 512))
+            printf(
+                "[lbn] abriu n=%u setor=%llu tamanho=%llu offset=%llu fd=%d thread=%d\n",
+                lbn_open_count,
+                (unsigned long long)sector,
+                (unsigned long long)size,
+                (unsigned long long)offset,
+                descriptor,
+                GetThreadId()
+            );
+
         return descriptor;
     }
 
@@ -457,6 +556,24 @@ int psbridge_file_read(int descriptor, void *buffer, u32 size)
                 destination,
                 size
             );
+
+            lbn_read_count++;
+
+            if (
+                lbn_read_count <= 16 ||
+                !(lbn_read_count % 512) ||
+                bytes_read < 0 ||
+                (u32)bytes_read != size
+            )
+                printf(
+                    "[lbn] leu n=%u fd=%d pedido=%u resultado=%d posicao=%lld thread=%d\n",
+                    lbn_read_count,
+                    descriptor,
+                    size,
+                    bytes_read,
+                    (long long)handle->position,
+                    GetThreadId()
+                );
 
             if (bytes_read > 0)
                 handle->position += bytes_read;
