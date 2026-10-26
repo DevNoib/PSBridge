@@ -3,7 +3,6 @@
 #include <gsKit.h>
 #include <kernel.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <timer.h>
 
@@ -24,8 +23,6 @@ static int framebuffer_format = 3;
 static int graphics_ready;
 static u64 vblank_epoch;
 static int vblank_ready;
-static u32 display_wait_count;
-static u32 framebuffer_count;
 
 #define VBLANK_DURATION_US 16683u
 
@@ -304,19 +301,6 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
         framebuffer = (const void *)(uintptr_t)a0;
         framebuffer_width = a1;
         framebuffer_format = a2;
-        framebuffer_count++;
-
-        if (framebuffer_count <= 8 || !(framebuffer_count % 256))
-            printf(
-                "[display] buffer n=%u endereco=%08x largura=%u formato=%u sync=%u thread=%d\n",
-                framebuffer_count,
-                a0,
-                a1,
-                a2,
-                a3,
-                GetThreadId()
-            );
-
         (void)a3;
         return 0;
     }
@@ -333,18 +317,6 @@ u64 psbridge_display(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
 
         present();
         wait_vblank(cycles, nid != 0x984c27e7);
-        display_wait_count++;
-
-        if (display_wait_count <= 8 || !(display_wait_count % 120))
-            printf(
-                "[display] vblank n=%u nid=%08x contador=%u buffer=%08x thread=%d\n",
-                display_wait_count,
-                nid,
-                current_vcount(),
-                (u32)(uintptr_t)framebuffer,
-                GetThreadId()
-            );
-
         return 0;
     }
 

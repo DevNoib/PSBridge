@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <debug.h>
 #include <string.h>
 
 #include <psbridge.h>
@@ -284,12 +283,6 @@ int psbridge_alloc_partition(int partition, const char *name, int type, u32 size
     blocks[index].uid = 0x400 + index;
     blocks[index].address = memory;
     blocks[index].size = size;
-
-    scr_printf(
-        "memoria criada uid %d tamanho %u\n",
-        blocks[index].uid,
-        size
-    );
 
     return blocks[index].uid;
 }

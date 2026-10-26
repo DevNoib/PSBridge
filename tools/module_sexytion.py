@@ -6,13 +6,14 @@ def quote_path(path):
     return str(path).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def add_image(lines, path, data, segments, pointers, label):
+def add_image(lines, path, data, segments, pointers, label, image_base):
     file_size = file_end(segments)
     position = 0
 
     lines.extend([
         '.section .guest_image,"aw",@progbits',
-        ".balign 16",
+        ".balign 65536",
+        f".space {image_base & 0xffff}",
         ".globl guest_memory",
         ".globl guest_file_end",
         "guest_memory:",
@@ -64,6 +65,21 @@ def add_map(lines, addresses, label):
         lines.append(f".word 0x{address:08x}, {label(address)}")
 
     lines.append("guest_map_end:")
+
+
+def add_overlay_map(lines, entries):
+    lines.extend([
+        '.section .rodata.overlay_map,"a",@progbits',
+        ".balign 4",
+        ".globl overlay_map_count",
+        ".globl overlay_map",
+        "overlay_map_count:",
+        f".word {len(entries)}",
+        "overlay_map:",
+    ])
+
+    for address, opcode, target in entries:
+        lines.append(f".word 0x{address:08x}, 0x{opcode:08x}, {target}")
 
 
 def add_info(lines, base, data_size, file_size, gp):

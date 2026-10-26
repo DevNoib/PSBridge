@@ -159,6 +159,56 @@ guest_resolve_higher:
     nop
 
 guest_resolve_done:
+    lui $5, %hi(guest_info)
+    addiu $5, $5, %lo(guest_info)
+    lw $4, 4($5)
+    sltu $1, $25, $4
+    bne $1, $0, guest_resolve_restore
+    nop
+
+    lw $6, 8($5)
+    addu $3, $4, $6
+    sltu $1, $25, $3
+    beq $1, $0, guest_resolve_restore
+    nop
+
+    lw $7, 0($5)
+    subu $1, $25, $4
+    addu $7, $7, $1
+    lw $7, 0($7)
+    lui $3, %hi(overlay_map_count)
+    lw $3, %lo(overlay_map_count)($3)
+    lui $5, %hi(overlay_map)
+    addiu $5, $5, %lo(overlay_map)
+    or $2, $0, $0
+
+guest_resolve_overlay_loop:
+    sltu $1, $2, $3
+    beq $1, $0, guest_resolve_restore
+    nop
+
+    sll $4, $2, 3
+    sll $6, $2, 2
+    addu $4, $4, $6
+    addu $4, $5, $4
+    lw $6, 0($4)
+    bne $6, $25, guest_resolve_overlay_next
+    nop
+
+    lw $6, 4($4)
+    bne $6, $7, guest_resolve_overlay_next
+    nop
+
+    lw $25, 8($4)
+    b guest_resolve_restore
+    nop
+
+guest_resolve_overlay_next:
+    addiu $2, $2, 1
+    b guest_resolve_overlay_loop
+    nop
+
+guest_resolve_restore:
     lw $1, 0($sp)
     lw $2, 4($sp)
     lw $3, 8($sp)

@@ -64,6 +64,7 @@ s64 psbridge_file_seek(int descriptor, u32 low, u32 high, int whence);
 int psbridge_file_stat(const char *path, void *output);
 int psbridge_file_remove(const char *path);
 int psbridge_file_rename(const char *old_path, const char *new_path);
+int psbridge_file_ioctl(int descriptor, u32 command, void *input, u32 input_size, void *output, u32 output_size);
 int psbridge_umd_present(void);
 u32 psbridge_umd_state(void);
 int psbridge_umd_activate(int mode, const char *name);

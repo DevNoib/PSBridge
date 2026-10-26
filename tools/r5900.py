@@ -92,12 +92,14 @@ def emit(instruction, label, address):
         )
 
         return [
-            f"mthi1 {reg(scratch)}",
-            f"or {reg(scratch)}, {reg(source)}, $0",
+            "addiu $sp, $sp, -16",
+            f"sw {reg(scratch)}, 0($sp)",
+            f"or {reg(scratch)}, {reg(source)}, $0" if source != 29 else f"addiu {reg(scratch)}, $sp, 16",
             f"srl {reg(destination)}, {reg(scratch)}, {shift}",
             f"sll {reg(scratch)}, {reg(scratch)}, {32 - shift}",
             f"or {reg(destination)}, {reg(destination)}, {reg(scratch)}",
-            f"mfhi1 {reg(scratch)}",
+            f"lw {reg(scratch)}, 0($sp)",
+            "addiu $sp, $sp, 16",
         ]
 
     if name == "rotrv":
@@ -112,18 +114,32 @@ def emit(instruction, label, address):
         ][:2]
         value, complement = scratch
 
+        source_copy = (
+            f"or {reg(value)}, {reg(source)}, $0"
+            if source != 29
+            else f"addiu {reg(value)}, $sp, 16"
+        )
+        shift_copy = (
+            f"andi {reg(complement)}, {reg(shift)}, 31"
+            if shift != 29
+            else f"addiu {reg(complement)}, $sp, 16"
+        )
+
         return [
-            f"mthi1 {reg(value)}",
-            f"mtlo1 {reg(complement)}",
-            f"or {reg(value)}, {reg(source)}, $0",
-            f"andi {reg(complement)}, {reg(shift)}, 31",
+            "addiu $sp, $sp, -16",
+            f"sw {reg(value)}, 0($sp)",
+            f"sw {reg(complement)}, 4($sp)",
+            source_copy,
+            shift_copy,
+            f"andi {reg(complement)}, {reg(complement)}, 31" if shift == 29 else "nop",
             f"srlv {reg(destination)}, {reg(value)}, {reg(complement)}",
             f"subu {reg(complement)}, $0, {reg(complement)}",
             f"andi {reg(complement)}, {reg(complement)}, 31",
             f"sllv {reg(value)}, {reg(value)}, {reg(complement)}",
             f"or {reg(destination)}, {reg(destination)}, {reg(value)}",
-            f"mflo1 {reg(complement)}",
-            f"mfhi1 {reg(value)}",
+            f"lw {reg(complement)}, 4($sp)",
+            f"lw {reg(value)}, 0($sp)",
+            "addiu $sp, $sp, 16",
         ]
 
     if name == "jr":

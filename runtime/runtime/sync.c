@@ -1,7 +1,6 @@
 #include <delaythread.h>
 #include <kernel.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <timer.h>
 
@@ -34,9 +33,6 @@ static Callback callbacks[CALLBACK_LIMIT];
 static int next_event_uid = 0x2000;
 static int next_callback_uid = 0x1800;
 static int sync_lock = -1;
-static u32 event_wait_count;
-static u32 callback_notify_count;
-static u32 callback_fire_count;
 
 static u64 current_time(void)
 {
@@ -105,13 +101,6 @@ int psbridge_create_event(u32 attributes, u32 initial)
         event_flags[index].attributes = attributes;
         event_flags[index].pattern = initial;
         SignalSema(sync_lock);
-        printf(
-            "[event] criou uid=%d atributos=%08x inicial=%08x thread=%d\n",
-            uid,
-            attributes,
-            initial,
-            GetThreadId()
-        );
         return uid;
     }
 
@@ -185,20 +174,6 @@ int psbridge_wait_event(int uid, u32 bits, u32 mode, void *output, void *timeout
     u32 *remaining = timeout ? psbridge_game_pointer(timeout) : NULL;
     u32 limit = remaining ? *remaining : 0;
     u64 started = current_time();
-
-    event_wait_count++;
-
-    if (event_wait_count <= 16 || !(event_wait_count % 512))
-        printf(
-            "[event] espera n=%u uid=%d bits=%08x modo=%08x cb=%d poll=%d thread=%d\n",
-            event_wait_count,
-            uid,
-            bits,
-            mode,
-            use_callbacks,
-            polling,
-            GetThreadId()
-        );
 
     if ((!result && output) || (!remaining && timeout) || !bits || (mode & ~0x31u))
         return -1;
@@ -293,13 +268,6 @@ int psbridge_create_callback(u32 function, u32 common)
         callback->pending = 0;
         callback->argument = 0;
         SignalSema(sync_lock);
-        printf(
-            "[callback] criou uid=%d funcao=%08x comum=%08x thread=%d\n",
-            callback->uid,
-            function,
-            common,
-            callback->thread
-        );
         return callback->uid;
     }
 
@@ -346,18 +314,7 @@ int psbridge_notify_callback(int uid, u32 argument)
         callback->pending++;
 
     callback->argument = argument;
-    callback_notify_count++;
     SignalSema(sync_lock);
-
-    if (callback_notify_count <= 16 || !(callback_notify_count % 256))
-        printf(
-            "[callback] notificou n=%u uid=%d argumento=%08x pendentes=%u thread=%d\n",
-            callback_notify_count,
-            uid,
-            argument,
-            callback->pending,
-            GetThreadId()
-        );
 
     return 0;
 }
@@ -429,19 +386,6 @@ int psbridge_check_callbacks(void)
         common = callback->common;
         callback->pending = 0;
         SignalSema(sync_lock);
-
-        callback_fire_count++;
-
-        if (callback_fire_count <= 16 || !(callback_fire_count % 256))
-            printf(
-                "[callback] executou n=%u uid=%d funcao=%08x vezes=%u argumento=%08x thread=%d\n",
-                callback_fire_count,
-                uid,
-                function,
-                count,
-                argument,
-                current
-            );
 
         result = psbridge_call_callback(
             (void *)(uintptr_t)function,

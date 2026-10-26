@@ -42,27 +42,6 @@ static int umd_callback = -1;
 static UmdFile umd_files[UMD_FILES];
 static u32 next_umd_sector;
 static int umd_file_lock = -1;
-static u32 lbn_open_count;
-static u32 lbn_read_count;
-static u32 lbn_close_count;
-
-static u32 sample_hash(const void *data, u32 size)
-{
-    const u8 *bytes = data;
-    u32 hash = 2166136261u;
-    u32 index;
-
-    if (size > 256)
-        size = 256;
-
-    for (index = 0; index < size; index++) {
-        hash ^= bytes[index];
-        hash *= 16777619u;
-    }
-
-    return hash;
-}
-
 typedef struct {
     u16 year;
     u16 month;
@@ -468,39 +447,18 @@ int psbridge_file_open(const char *path, int flags, int mode)
     lbn = lbn_path(path, &sector, &size);
 
     if (lbn) {
-        if (lbn < 0 || (flags & 3) == 2 || (flags & 3) == 3) {
-            printf(
-                "[lbn] abertura invalida setor=%llu tamanho=%llu flags=%08x\n",
-                (unsigned long long)sector,
-                (unsigned long long)size,
-                flags
-            );
+        if (lbn < 0 || (flags & 3) == 2 || (flags & 3) == 3)
             return -1;
-        }
 
         file = find_umd_file(sector);
 
-        if (!file) {
-            printf(
-                "[lbn] setor sem arquivo setor=%llu tamanho=%llu\n",
-                (unsigned long long)sector,
-                (unsigned long long)size
-            );
+        if (!file)
             return -1;
-        }
 
         offset = (sector - file->first_sector) * 2048;
 
-        if (offset > file->size || size > file->size - offset) {
-            printf(
-                "[lbn] fora do arquivo setor=%llu tamanho=%llu offset=%llu limite=%llu\n",
-                (unsigned long long)sector,
-                (unsigned long long)size,
-                (unsigned long long)offset,
-                (unsigned long long)file->size
-            );
+        if (offset > file->size || size > file->size - offset)
             return -1;
-        }
 
         descriptor = new_umd_handle();
 
@@ -511,19 +469,6 @@ int psbridge_file_open(const char *path, int flags, int mode)
         handle->file_index = file - umd_files;
         handle->start = offset;
         handle->length = size;
-
-        lbn_open_count++;
-
-        if (lbn_open_count <= 16 || !(lbn_open_count % 512))
-            printf(
-                "[lbn] abriu n=%u setor=%llu tamanho=%llu offset=%llu fd=%d thread=%d\n",
-                lbn_open_count,
-                (unsigned long long)sector,
-                (unsigned long long)size,
-                (unsigned long long)offset,
-                descriptor,
-                GetThreadId()
-            );
 
         return descriptor;
     }
@@ -539,21 +484,6 @@ int psbridge_file_close(int descriptor)
     UmdHandle *handle = umd_handle(descriptor);
 
     if (handle) {
-        lbn_close_count++;
-
-        if (lbn_close_count <= 16 || !(lbn_close_count % 512))
-            printf(
-                "[lbn] fechou n=%u fd=%d raw=%d arquivo=%d inicio=%llu posicao=%lld tamanho=%llu thread=%d\n",
-                lbn_close_count,
-                descriptor,
-                handle->raw,
-                handle->file_index,
-                (unsigned long long)handle->start,
-                (long long)handle->position,
-                (unsigned long long)handle->length,
-                GetThreadId()
-            );
-
         memset(handle, 0, sizeof(*handle));
         return 0;
     }
@@ -589,37 +519,6 @@ int psbridge_file_read(int descriptor, void *buffer, u32 size)
                 destination,
                 size
             );
-
-            lbn_read_count++;
-
-            if (
-                lbn_read_count <= 16 ||
-                !(lbn_read_count % 512) ||
-                bytes_read < 0 ||
-                (u32)bytes_read != size
-            ) {
-                u32 words[4] = {0, 0, 0, 0};
-                u32 copied = bytes_read > 16 ? 16 : bytes_read > 0 ? bytes_read : 0;
-
-                if (copied)
-                    memcpy(words, destination, copied);
-
-                printf(
-                    "[lbn] leu n=%u fd=%d buffer=%08x pedido=%u resultado=%d posicao=%lld hash=%08x dados=%08x:%08x:%08x:%08x thread=%d\n",
-                    lbn_read_count,
-                    descriptor,
-                    (u32)(uintptr_t)buffer,
-                    size,
-                    bytes_read,
-                    (long long)handle->position,
-                    bytes_read > 0 ? sample_hash(destination, bytes_read) : 0,
-                    words[0],
-                    words[1],
-                    words[2],
-                    words[3],
-                    GetThreadId()
-                );
-            }
 
             if (bytes_read > 0)
                 handle->position += bytes_read;
@@ -765,4 +664,117 @@ int psbridge_file_rename(const char *old_path, const char *new_path)
         return -1;
 
     return rename(old_translated, new_translated);
+}
+
+int psbridge_file_ioctl(
+    int descriptor,
+    u32 command,
+    void *input,
+    u32 input_size,
+    void *output,
+    u32 output_size
+)
+{
+    UmdHandle *handle = umd_handle(descriptor);
+    void *input_data = psbridge_game_pointer(input);
+    void *output_data = psbridge_game_pointer(output);
+    UmdFile *file;
+    u64 offset;
+    u32 whence;
+    u32 amount;
+    s64 position;
+
+    if (!handle)
+        return -1;
+
+    file = handle->raw ? NULL : &umd_files[handle->file_index];
+
+    if (command == 0x01020003) {
+        if (!output_data || output_size < 4)
+            return -1;
+
+        *(u32 *)output_data = 2048;
+        return 0;
+    }
+
+    if (command == 0x01020004) {
+        if (!output_data || output_size < 4)
+            return -1;
+
+        *(u32 *)output_data = handle->position;
+        return 0;
+    }
+
+    if (command == 0x01010005 || command == 0x01f100a6) {
+        if (!input_data || input_size < 4)
+            return -1;
+
+        memcpy(&offset, input_data, sizeof(offset));
+        memcpy(&whence, (u8 *)input_data + 12, sizeof(whence));
+
+        if (whence == SEEK_SET)
+            position = offset;
+        else if (whence == SEEK_CUR)
+            position = handle->position + offset;
+        else if (whence == SEEK_END)
+            position = (handle->raw ? 0 : handle->length) + offset;
+        else
+            return -1;
+
+        if (position < 0 || (!handle->raw && (u64)position > handle->length))
+            return -1;
+
+        handle->position = position;
+        return 0;
+    }
+
+    if (command == 0x01020006) {
+        if (!file || !output_data || output_size < 4)
+            return -1;
+
+        *(u32 *)output_data = file->first_sector + handle->start / 2048;
+        return 0;
+    }
+
+    if (command == 0x01020007) {
+        if (!file || !output_data || output_size < 8)
+            return -1;
+
+        *(u64 *)output_data = handle->length;
+        return 0;
+    }
+
+    if (command == 0x01030008) {
+        if (!input_data || input_size < 4)
+            return -1;
+
+        amount = *(u32 *)input_data;
+
+        if (!output_data || amount > output_size)
+            return -1;
+
+        return psbridge_file_read(descriptor, output, amount);
+    }
+
+    if (command == 0x01d20001) {
+        if (!handle->raw || !output_data || output_size < 4)
+            return -1;
+
+        *(u32 *)output_data = handle->position;
+        return 0;
+    }
+
+    if (command == 0x01f30003) {
+        if (!handle->raw || !input_data || input_size < 4)
+            return -1;
+
+        amount = *(u32 *)input_data;
+
+        if (!output_data || amount > output_size / 2048)
+            return -1;
+
+        return psbridge_file_read(descriptor, output, amount);
+    }
+
+    return -1;
 }

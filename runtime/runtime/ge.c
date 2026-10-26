@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <stdio.h>
 #include <kernel.h>
 
 #include "psbridge.h"
@@ -91,7 +90,6 @@ static GeList lists[GE_LIST_LIMIT];
 static GeState state;
 static int next_list_id = 1;
 static int next_callback_id = 1;
-static u32 ge_execute_count;
 
 static int align_value(int value, int alignment)
 {
@@ -1043,7 +1041,6 @@ static GeList *find_list(int id)
 
 static void execute_list(GeList *list)
 {
-    u32 start = list->pc;
     int commands = 0;
 
     while (!list->done && commands++ < GE_COMMAND_LIMIT) {
@@ -1104,20 +1101,6 @@ static void execute_list(GeList *list)
     if (commands >= GE_COMMAND_LIMIT)
         list->done = 1;
 
-    ge_execute_count++;
-
-    if (ge_execute_count <= 16 || !(ge_execute_count % 128) || commands >= GE_COMMAND_LIMIT)
-        printf(
-            "[ge] executou n=%u id=%d inicio=%08x fim=%08x comandos=%d pronto=%d stall=%08x thread=%d\n",
-            ge_execute_count,
-            list->id,
-            start,
-            list->pc,
-            commands,
-            list->done,
-            list->stall,
-            GetThreadId()
-        );
 }
 
 static int enqueue_list(u32 address, u32 stall)

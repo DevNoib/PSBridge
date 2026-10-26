@@ -1,7 +1,6 @@
 #include <delaythread.h>
 #include <kernel.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <timer.h>
 
@@ -31,8 +30,6 @@ typedef struct {
 
 static NativeLwMutex mutexes[MUTEX_LIMIT];
 static int next_mutex_uid = 0x1000;
-static u32 mutex_lock_count;
-static u32 mutex_busy_count;
 
 static u64 current_time(void)
 {
@@ -109,14 +106,6 @@ int psbridge_create_lwmutex(void *workarea, u32 attributes, int initial_count)
         area->lock_level = initial_count;
         area->lock_thread = initial_count ? psbridge_psp_thread_uid() : 0;
         area->attributes = attributes;
-        printf(
-            "[lwmutex] criou uid=%d area=%08x atributos=%08x nivel=%d thread=%d\n",
-            mutex->uid,
-            (u32)(uintptr_t)workarea,
-            attributes,
-            initial_count,
-            GetThreadId()
-        );
         return 0;
     }
 
@@ -162,20 +151,6 @@ int psbridge_lock_lwmutex_ex(void *workarea, int count, void *timeout, int use_c
 
     limit = remaining ? *remaining : 0;
     started = current_time();
-    mutex_lock_count++;
-
-    if (mutex_lock_count <= 16 || !(mutex_lock_count % 1024))
-        printf(
-            "[lwmutex] lock n=%u uid=%d area=%08x quantidade=%d cb=%d try=%d thread=%d\n",
-            mutex_lock_count,
-            mutex->uid,
-            (u32)(uintptr_t)workarea,
-            count,
-            use_callbacks,
-            try_only,
-            caller
-        );
-
     WaitSema(mutex->guard);
 
     if (mutex->owner == caller && mutex->area->lock_level > 0) {
@@ -236,21 +211,6 @@ int psbridge_lock_lwmutex_ex(void *workarea, int count, void *timeout, int use_c
     if (remaining) {
         u64 elapsed = current_time() - started;
         *remaining = elapsed >= limit ? 0 : limit - (u32)elapsed;
-    }
-
-    if (result < 0) {
-        mutex_busy_count++;
-
-        if (mutex_busy_count <= 16 || !(mutex_busy_count % 512))
-            printf(
-                "[lwmutex] ocupado n=%u uid=%d area=%08x dono=%d nivel=%d thread=%d\n",
-                mutex_busy_count,
-                mutex->uid,
-                (u32)(uintptr_t)workarea,
-                mutex->owner,
-                mutex->area->lock_level,
-                caller
-            );
     }
 
     return result >= 0 ? 0 : LOCK_BUSY;
