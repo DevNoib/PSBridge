@@ -151,6 +151,10 @@ def emit(instruction, label, address):
         return resolve_jump(source) + [f"jr {reg(source)}"]
     if name == "jalr":
         _, link, source = instruction
+        if link == source == 0:
+            return ["jr $0"]
+        if link == source:
+            raise ValueError(f"jalr com registradores iguais em 0x{address:08x}")
         return resolve_jump(source) + [f"jalr {reg(link)}, {reg(source)}"]
 
     if name in ("addu", "subu", "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn"):
