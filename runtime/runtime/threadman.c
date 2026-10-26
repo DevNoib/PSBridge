@@ -53,6 +53,27 @@ static u32 mailbox_send_count;
 static u32 mailbox_receive_count;
 static u32 mailbox_timeout_count;
 
+static const u32 *trace_pointer(u32 address, u32 size)
+{
+    u32 linked = (u32)(uintptr_t)guest_info.memory;
+
+    if (
+        address >= linked &&
+        address - linked <= guest_info.memory_size &&
+        size <= guest_info.memory_size - (address - linked)
+    )
+        return (const u32 *)(uintptr_t)address;
+
+    if (
+        address >= guest_info.base &&
+        address - guest_info.base <= guest_info.memory_size &&
+        size <= guest_info.memory_size - (address - guest_info.base)
+    )
+        return (const u32 *)((const u8 *)guest_info.memory + address - guest_info.base);
+
+    return NULL;
+}
+
 static unsigned char thread_stacks[THREAD_LIMIT] [THREAD_STACK_SIZE]
     __attribute__((aligned(16)));
 
@@ -422,15 +443,44 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
 
     mailbox_receive_count++;
 
-    if (mailbox_receive_count <= 16 || !(mailbox_receive_count % 256))
+    if (mailbox_receive_count <= 16 || !(mailbox_receive_count % 256)) {
+        const u32 *packet = psbridge_game_pointer((void *)(uintptr_t)*destination);
+        u32 words[4] = {0, 0, 0, 0};
+
+        if (packet) {
+            words[0] = packet[0];
+            words[1] = packet[1];
+            words[2] = packet[2];
+            words[3] = packet[3];
+        }
+
         printf(
-            "[mbx] recebeu n=%u uid=%d mensagem=%08x fila=%d thread=%d\n",
+            "[mbx] recebeu n=%u uid=%d mensagem=%08x fila=%d dados=%08x:%08x:%08x:%08x thread=%d\n",
             mailbox_receive_count,
             uid,
             *destination,
             mailbox->count,
+            words[0],
+            words[1],
+            words[2],
+            words[3],
             GetThreadId()
         );
+
+        if (packet) {
+            const u32 *object = trace_pointer(words[2], 16);
+            const u32 *table = object ? trace_pointer(object[0], 24) : NULL;
+
+            printf(
+                "[mbx-job] objeto=%08x argumento=%08x tabela=%08x ajuste=%d funcao=%08x\n",
+                words[2],
+                words[3],
+                object ? object[0] : 0,
+                table ? (int)(int16_t)table[4] : 0,
+                table ? table[5] : 0
+            );
+        }
+    }
 
     SignalSema(mailbox->lock);
 

@@ -78,6 +78,54 @@ def emit(instruction, label, address):
         _, rd, rt, rs = instruction
         return [f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"]
 
+    if name == "rotr":
+        _, destination, source, shift = instruction
+
+        if destination == 0:
+            return ["nop"]
+        if shift == 0:
+            return [f"or {reg(destination)}, {reg(source)}, $0"]
+
+        scratch = next(
+            item for item in (26, 27, 1, 25, 24, 23, 22, 21)
+            if item not in (destination, source)
+        )
+
+        return [
+            f"mthi1 {reg(scratch)}",
+            f"or {reg(scratch)}, {reg(source)}, $0",
+            f"srl {reg(destination)}, {reg(scratch)}, {shift}",
+            f"sll {reg(scratch)}, {reg(scratch)}, {32 - shift}",
+            f"or {reg(destination)}, {reg(destination)}, {reg(scratch)}",
+            f"mfhi1 {reg(scratch)}",
+        ]
+
+    if name == "rotrv":
+        _, destination, source, shift = instruction
+
+        if destination == 0:
+            return ["nop"]
+
+        scratch = [
+            item for item in (26, 27, 1, 25, 24, 23, 22, 21)
+            if item not in (destination, source, shift)
+        ][:2]
+        value, complement = scratch
+
+        return [
+            f"mthi1 {reg(value)}",
+            f"mtlo1 {reg(complement)}",
+            f"or {reg(value)}, {reg(source)}, $0",
+            f"andi {reg(complement)}, {reg(shift)}, 31",
+            f"srlv {reg(destination)}, {reg(value)}, {reg(complement)}",
+            f"subu {reg(complement)}, $0, {reg(complement)}",
+            f"andi {reg(complement)}, {reg(complement)}, 31",
+            f"sllv {reg(value)}, {reg(value)}, {reg(complement)}",
+            f"or {reg(destination)}, {reg(destination)}, {reg(value)}",
+            f"mflo1 {reg(complement)}",
+            f"mfhi1 {reg(value)}",
+        ]
+
     if name == "jr":
         source = instruction[1]
 

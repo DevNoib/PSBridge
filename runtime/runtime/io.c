@@ -44,6 +44,24 @@ static u32 next_umd_sector;
 static int umd_file_lock = -1;
 static u32 lbn_open_count;
 static u32 lbn_read_count;
+static u32 lbn_close_count;
+
+static u32 sample_hash(const void *data, u32 size)
+{
+    const u8 *bytes = data;
+    u32 hash = 2166136261u;
+    u32 index;
+
+    if (size > 256)
+        size = 256;
+
+    for (index = 0; index < size; index++) {
+        hash ^= bytes[index];
+        hash *= 16777619u;
+    }
+
+    return hash;
+}
 
 typedef struct {
     u16 year;
@@ -521,6 +539,21 @@ int psbridge_file_close(int descriptor)
     UmdHandle *handle = umd_handle(descriptor);
 
     if (handle) {
+        lbn_close_count++;
+
+        if (lbn_close_count <= 16 || !(lbn_close_count % 512))
+            printf(
+                "[lbn] fechou n=%u fd=%d raw=%d arquivo=%d inicio=%llu posicao=%lld tamanho=%llu thread=%d\n",
+                lbn_close_count,
+                descriptor,
+                handle->raw,
+                handle->file_index,
+                (unsigned long long)handle->start,
+                (long long)handle->position,
+                (unsigned long long)handle->length,
+                GetThreadId()
+            );
+
         memset(handle, 0, sizeof(*handle));
         return 0;
     }
@@ -564,16 +597,29 @@ int psbridge_file_read(int descriptor, void *buffer, u32 size)
                 !(lbn_read_count % 512) ||
                 bytes_read < 0 ||
                 (u32)bytes_read != size
-            )
+            ) {
+                u32 words[4] = {0, 0, 0, 0};
+                u32 copied = bytes_read > 16 ? 16 : bytes_read > 0 ? bytes_read : 0;
+
+                if (copied)
+                    memcpy(words, destination, copied);
+
                 printf(
-                    "[lbn] leu n=%u fd=%d pedido=%u resultado=%d posicao=%lld thread=%d\n",
+                    "[lbn] leu n=%u fd=%d buffer=%08x pedido=%u resultado=%d posicao=%lld hash=%08x dados=%08x:%08x:%08x:%08x thread=%d\n",
                     lbn_read_count,
                     descriptor,
+                    (u32)(uintptr_t)buffer,
                     size,
                     bytes_read,
                     (long long)handle->position,
+                    bytes_read > 0 ? sample_hash(destination, bytes_read) : 0,
+                    words[0],
+                    words[1],
+                    words[2],
+                    words[3],
                     GetThreadId()
                 );
+            }
 
             if (bytes_read > 0)
                 handle->position += bytes_read;

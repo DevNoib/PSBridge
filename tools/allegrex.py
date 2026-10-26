@@ -49,10 +49,14 @@ def decode(address, word):
         if funct == 0:
             return "sll", rd, rt, shift
         if funct == 2:
+            if rs == 1:
+                return "rotr", rd, rt, shift
             return "srl", rd, rt, shift
         if funct == 3:
             return "sra", rd, rt, shift
         if funct in (4, 6, 7):
+            if funct == 6 and shift == 1:
+                return "rotrv", rd, rt, rs
             return {4: "sllv", 6: "srlv", 7: "srav"}[funct], rd, rt, rs
 
         if funct == 8:
@@ -207,10 +211,10 @@ def format_instruction(instruction):
     if name in ("nop", "cache"):
         return name
 
-    if name in ("sll", "srl", "sra"):
+    if name in ("sll", "srl", "sra", "rotr"):
         _, rd, rt, shift = instruction
         return f"{name} {reg(rd)}, {reg(rt)}, {shift}"
-    if name in ("sllv", "srlv", "srav"):
+    if name in ("sllv", "srlv", "srav", "rotrv"):
         _, rd, rt, rs = instruction
         return f"{name} {reg(rd)}, {reg(rt)}, {reg(rs)}"
 

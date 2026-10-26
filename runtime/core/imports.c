@@ -41,11 +41,105 @@ static u64 system_time(void)
 #define LIB_SAS 0x1d46fbf4
 #define LIB_ATRAC 0x75263ea8
 
-static u32 delay_count;
+static u32 io_open_trace_count;
+static u32 io_read_trace_count;
+static u32 io_close_trace_count;
+static u32 mailbox_trace_count;
 
-u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5)
+typedef struct {
+    int used;
+    int thread;
+    u32 callsite;
+    u32 count;
+} DelayTrace;
+
+static DelayTrace delay_traces[16];
+
+static u32 trace_delay(int thread, u32 callsite)
+{
+    int index;
+
+    for (index = 0; index < 16; index++) {
+        DelayTrace *trace = &delay_traces[index];
+
+        if (trace->used && trace->thread == thread && trace->callsite == callsite)
+            return ++trace->count;
+    }
+
+    for (index = 0; index < 16; index++) {
+        DelayTrace *trace = &delay_traces[index];
+
+        if (trace->used)
+            continue;
+
+        trace->used = 1;
+        trace->thread = thread;
+        trace->callsite = callsite;
+        trace->count = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 callsite)
 {
     (void)a5;
+
+    if (import->library == LIB_IO) {
+        u32 *count = NULL;
+        const char *name = NULL;
+
+        if (import->nid == 0x109f50bc) {
+            count = &io_open_trace_count;
+            name = "open";
+        } else if (import->nid == 0x6a638d83) {
+            count = &io_read_trace_count;
+            name = "read";
+        } else if (import->nid == 0x810c4bc3) {
+            count = &io_close_trace_count;
+            name = "close";
+        }
+
+        if (count) {
+            (*count)++;
+
+            if (*count <= 16 || !(*count % 512))
+                printf(
+                    "[io-call] %s n=%u site=%08x a0=%08x a1=%08x a2=%08x thread=%d\n",
+                    name,
+                    *count,
+                    callsite,
+                    a0,
+                    a1,
+                    a2,
+                    GetThreadId()
+                );
+        }
+    }
+
+    if (
+        import->library == LIB_THREADMAN &&
+        (
+            import->nid == 0xe9b3061e ||
+            import->nid == 0xf3986382 ||
+            import->nid == 0x18260574
+        )
+    ) {
+        mailbox_trace_count++;
+
+        if (mailbox_trace_count <= 16 || !(mailbox_trace_count % 512))
+            printf(
+                "[mbx-call] n=%u nid=%08x site=%08x a0=%08x a1=%08x a2=%08x thread=%d\n",
+                mailbox_trace_count,
+                import->nid,
+                callsite,
+                a0,
+                a1,
+                a2,
+                GetThreadId()
+            );
+    }
 
     if (import->library == LIB_SYSMEM) {
         if (import->nid == 0x13a5abef)
@@ -299,15 +393,22 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
             import->nid == 0xceadeb47 ||
             import->nid == 0x68da9e36
         ) {
-            delay_count++;
+            int thread = GetThreadId();
+            u32 count = trace_delay(thread, callsite);
 
-            if (delay_count <= 16 || !(delay_count % 2048))
+            if (count && (count <= 8 || !(count % 512)))
                 printf(
-                    "[delay] n=%u nid=%08x us=%u thread=%d\n",
-                    delay_count,
+                    "[delay] n=%u nid=%08x us=%u site=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x thread=%d\n",
+                    count,
                     import->nid,
                     a0,
-                    GetThreadId()
+                    callsite,
+                    a1,
+                    a2,
+                    a3,
+                    a4,
+                    a5,
+                    thread
                 );
 
             return psbridge_delay_thread(a0, import->nid == 0x68da9e36);

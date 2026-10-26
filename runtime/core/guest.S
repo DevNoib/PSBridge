@@ -48,6 +48,7 @@ psbridge_import:
     sd $27, 40($sp)
     sd $gp, 32($sp)
 
+    or $11, $ra, $0
     or $10, $9, $0
     or $9, $8, $0
     or $8, $7, $0

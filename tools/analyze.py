@@ -9,7 +9,7 @@ callback_imports = {
 
 writes_register = {
     "sll", "srl", "sra", "sllv", "srlv", "srav", "addu", "subu",
-    "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn",
+    "and", "or", "xor", "nor", "slt", "sltu", "movz", "movn", "rotr", "rotrv",
     "min", "max", "clz", "mfhi", "mflo", "addiu", "slti", "sltiu",
     "andi", "ori", "xori", "addi", "lui", "lb", "lbu", "lh", "lhu", "lwl",
     "lwr", "lw", "mfc1", "cfc1", "ext", "ins", "wsbw", "bitrev", "seb", "seh",
