@@ -8,11 +8,15 @@
 #define LIB_SAS 0x1d46fbf4
 #define LIB_ATRAC 0x75263ea8
 #define ATRAC_LIMIT 4
-#define ATRAC_SAMPLES 2048
+#define ATRAC3_SAMPLES 1024
+#define ATRAC3PLUS_SAMPLES 2048
+#define ATRAC3_CODEC 0x1001
+#define ATRAC3PLUS_CODEC 0x1000
 
 typedef struct {
     int used;
     int initialized;
+    u32 codec;
     u32 source_size;
     u32 output_channels;
 } AtracContext;
@@ -60,10 +64,14 @@ static u64 atrac_call(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4)
         return 0;
 
     if (nid == 0x780f88d1) {
+        if (a0 != ATRAC3_CODEC && a0 != ATRAC3PLUS_CODEC)
+            return (u32)-1;
+
         for (index = 0; index < ATRAC_LIMIT; index++) {
             if (!atrac_ids[index].used) {
                 memset(&atrac_ids[index], 0, sizeof(atrac_ids[index]));
                 atrac_ids[index].used = 1;
+                atrac_ids[index].codec = a0;
                 return index;
             }
         }
@@ -101,7 +109,11 @@ static u64 atrac_call(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4)
     if (nid != 0x0c116e1b || !id->initialized)
         return (u32)-1;
 
-    pcm_bytes = ATRAC_SAMPLES * id->output_channels * 2;
+    pcm_bytes = (
+        id->codec == ATRAC3_CODEC ?
+        ATRAC3_SAMPLES :
+        ATRAC3PLUS_SAMPLES
+    ) * id->output_channels * sizeof(int16_t);
     consumed = audio_pointer(a2, sizeof(u32));
     pcm = audio_pointer(a3, pcm_bytes);
     produced = audio_pointer(a4, sizeof(u32));
