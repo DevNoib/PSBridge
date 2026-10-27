@@ -43,6 +43,8 @@
 #define GE_CLUTFORMAT 0xc5
 #define GE_TEXWRAP 0xc7
 #define GE_TEXFUNC 0xc9
+#define GE_OFFSETX 0x4c
+#define GE_OFFSETY 0x4d
 #define GE_FRAMEBUF_FORMAT 0xd2
 #define GE_CLEARMODE 0xd3
 #define GE_SCISSOR1 0xd4
@@ -69,6 +71,8 @@ typedef struct {
     u32 vertex_address;
     u32 index_address;
     u32 offset_address;
+    float texture_u;
+    float texture_v;
 } GeState;
 
 typedef struct {
@@ -102,6 +106,11 @@ static int align_value(int value, int alignment)
         return value;
 
     return (value + alignment - 1) & ~(alignment - 1);
+}
+
+static int signed_argument(u32 value)
+{
+    return (int)(value << 8) >> 8;
 }
 
 static void *ge_pointer(u32 address)
@@ -472,7 +481,16 @@ static void draw_pixel(int x, int y, u32 color)
 
     index = y * width + x;
 
-    if ((state.command[GE_BLEND_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1)) {
+    if (state.command[GE_CLEARMODE] & 1) {
+        u32 clear = state.command[GE_CLEARMODE];
+
+        destination = read_frame_pixel(frame, index, format);
+
+        if (!(clear & 0x100))
+            color = (color & 0xff000000) | (destination & 0x00ffffff);
+        if (!(clear & 0x200))
+            color = (color & 0x00ffffff) | (destination & 0xff000000);
+    } else if (state.command[GE_BLEND_ENABLE] & 1) {
         destination = read_frame_pixel(frame, index, format);
         color = blend_color(color, destination);
     }
@@ -593,6 +611,14 @@ static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
     } else if (texture == 3) {
         vertex.u = *(const float *)(data + layout.texture);
         vertex.v = *(const float *)(data + layout.texture + 4);
+    } else {
+        vertex.u = state.texture_u;
+        vertex.v = state.texture_v;
+    }
+
+    if (texture) {
+        state.texture_u = vertex.u;
+        state.texture_v = vertex.v;
     }
 
     if (color >= 4 && color <= 6)
@@ -609,6 +635,15 @@ static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
     } else if (position == 3) {
         vertex.x = *(const float *)(data + layout.position);
         vertex.y = *(const float *)(data + layout.position + 4);
+    }
+
+    if (
+        (type & (1 << 23)) &&
+        ((type >> 2) & 7) &&
+        !(state.command[GE_CLEARMODE] & 1)
+    ) {
+        vertex.x += 2048.0f - signed_argument(state.command[GE_OFFSETX]) / 16.0f;
+        vertex.y += 2048.0f - signed_argument(state.command[GE_OFFSETY]) / 16.0f;
     }
 
     return vertex;
@@ -670,6 +705,7 @@ static int draw_solid_sprite(
 {
     void *frame;
     int width;
+    int format;
     int x;
     int y;
 
@@ -679,7 +715,9 @@ static int draw_solid_sprite(
     if ((state.command[GE_BLEND_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1))
         return 0;
 
-    if ((state.command[GE_FRAMEBUF_FORMAT] & 3) != 1)
+    format = state.command[GE_FRAMEBUF_FORMAT] & 3;
+
+    if (format != 1 && format != 3)
         return 0;
 
     if (!fast_sprite_target(&left, &top, &right, &bottom, &frame, &width))
@@ -695,6 +733,37 @@ static int draw_solid_sprite(
             (alpha >> 8) & mask
         ))
             return 1;
+    }
+
+    if (format == 3) {
+        u32 color = second.color;
+        u32 clear = state.command[GE_CLEARMODE];
+        int write_color = !(clear & 1) || (clear & 0x100);
+        int write_alpha = !(clear & 1) || (clear & 0x200);
+
+        if (!write_color && !write_alpha)
+            return 1;
+
+        for (y = top; y < bottom; y++) {
+            u32 *row = (u32 *)frame + y * width + left;
+
+            if (write_color && write_alpha) {
+                for (x = left; x < right; x++)
+                    *row++ = color;
+            } else if (write_color) {
+                for (x = left; x < right; x++) {
+                    *row = (*row & 0xff000000) | (color & 0x00ffffff);
+                    row++;
+                }
+            } else {
+                for (x = left; x < right; x++) {
+                    *row = (*row & 0x00ffffff) | (color & 0xff000000);
+                    row++;
+                }
+            }
+        }
+
+        return 1;
     }
 
     {
@@ -851,6 +920,367 @@ static int draw_rgba5551_sprite(
     return 1;
 }
 
+static int draw_clut4_sprite(
+    GeVertex first,
+    GeVertex second,
+    int left,
+    int top,
+    int right,
+    int bottom
+)
+{
+    u32 colors[16];
+    u8 visible[16];
+    int texture_width;
+    int texture_height;
+    int buffer_width;
+    int row_bytes;
+    int swizzled;
+    int clamp_x;
+    int clamp_y;
+    const u8 *texture;
+    void *frame;
+    int frame_width;
+    int blend;
+    int alpha_test;
+    u32 alpha_command;
+    int du;
+    int dv;
+    int u_start;
+    int v;
+    int index;
+    int x;
+    int y;
+
+    if (!(state.command[GE_TEXTURE_ENABLE] & 1) || (state.command[GE_CLEARMODE] & 1))
+        return 0;
+
+    if ((state.command[GE_TEXFORMAT] & 0xf) != 4)
+        return 0;
+
+    if ((state.command[GE_FRAMEBUF_FORMAT] & 3) != 3)
+        return 0;
+
+    texture_width = 1 << (state.command[GE_TEXSIZE0] & 0xf);
+    texture_height = 1 << ((state.command[GE_TEXSIZE0] >> 8) & 0xf);
+    buffer_width = state.command[GE_TEXBUFWIDTH0] & 0x7ff;
+    swizzled = state.command[GE_TEXMODE] & 1;
+    clamp_x = state.command[GE_TEXWRAP] & 1;
+    clamp_y = (state.command[GE_TEXWRAP] >> 8) & 1;
+    texture = ge_pointer(buffer_address(GE_TEXADDR0, GE_TEXBUFWIDTH0));
+
+    if (!texture || !texture_width || !texture_height)
+        return 0;
+
+    if (!buffer_width)
+        buffer_width = texture_width;
+
+    if (!fast_sprite_target(
+        &left,
+        &top,
+        &right,
+        &bottom,
+        &frame,
+        &frame_width
+    ))
+        return 1;
+
+    blend = state.command[GE_BLEND_ENABLE] & 1;
+    alpha_test = state.command[GE_ALPHA_TEST_ENABLE] & 1;
+    alpha_command = state.command[GE_ALPHATEST];
+
+    for (index = 0; index < 16; index++) {
+        u32 color = shade_pixel(palette_color(index), second.color);
+
+        colors[index] = color;
+        visible[index] = !alpha_test || compare_alpha(
+            alpha_command & 7,
+            (color >> 24) & ((alpha_command >> 16) & 0xff),
+            (alpha_command >> 8) & ((alpha_command >> 16) & 0xff)
+        );
+    }
+
+    du = (int)(
+        (second.u - first.u) * 65536.0f /
+        (second.x - first.x)
+    );
+    dv = (int)(
+        (second.v - first.v) * 65536.0f /
+        (second.y - first.y)
+    );
+    u_start =
+        (int)(first.u * 65536.0f) +
+        (int)((left - first.x) * du);
+    v =
+        (int)(first.v * 65536.0f) +
+        (int)((top - first.y) * dv);
+    row_bytes = (buffer_width + 1) >> 1;
+
+    for (y = top; y < bottom; y++) {
+        int texture_y = v >> 16;
+        int u = u_start;
+        u32 *row = (u32 *)frame + y * frame_width + left;
+
+        if (clamp_y) {
+            if (texture_y < 0)
+                texture_y = 0;
+            if (texture_y >= texture_height)
+                texture_y = texture_height - 1;
+        } else {
+            texture_y = (u32)texture_y & (texture_height - 1);
+        }
+
+        for (x = left; x < right; x++) {
+            int texture_x = u >> 16;
+            int offset;
+            u8 packed;
+            u32 color;
+
+            if (clamp_x) {
+                if (texture_x < 0)
+                    texture_x = 0;
+                if (texture_x >= texture_width)
+                    texture_x = texture_width - 1;
+            } else {
+                texture_x = (u32)texture_x & (texture_width - 1);
+            }
+
+            if (swizzled)
+                offset = pixel_offset(texture_x >> 1, texture_y, row_bytes, 1, 1);
+            else
+                offset = texture_y * row_bytes + (texture_x >> 1);
+
+            packed = texture[offset];
+            index = (texture_x & 1) ? packed >> 4 : packed & 0x0f;
+
+            if (!visible[index]) {
+                row++;
+                u += du;
+                continue;
+            }
+
+            color = colors[index];
+
+            if (!blend || (color >> 24) == 255) {
+                *row = color;
+            } else if (color >> 24) {
+                u32 destination = *row;
+                u32 alpha = color >> 24;
+                u32 inverse = 255 - alpha;
+                u32 red = ((color & 0xff) * alpha + (destination & 0xff) * inverse) / 255;
+                u32 green = (((color >> 8) & 0xff) * alpha + ((destination >> 8) & 0xff) * inverse) / 255;
+                u32 blue = (((color >> 16) & 0xff) * alpha + ((destination >> 16) & 0xff) * inverse) / 255;
+                u32 output_alpha = alpha + ((destination >> 24) * inverse) / 255;
+
+                *row = red | (green << 8) | (blue << 16) | (output_alpha << 24);
+            }
+
+            row++;
+            u += du;
+        }
+
+        v += dv;
+    }
+
+    return 1;
+}
+
+static int draw_rgba8888_sprite(
+    GeVertex first,
+    GeVertex second,
+    int left,
+    int top,
+    int right,
+    int bottom
+)
+{
+    int texture_width;
+    int texture_height;
+    int buffer_width;
+    int row_bytes;
+    int swizzled;
+    int clamp_x;
+    int clamp_y;
+    const u8 *texture;
+    void *frame;
+    int frame_width;
+    int blend;
+    int alpha_test;
+    u32 alpha_command;
+    int direct_color;
+    int use_alpha;
+    int du;
+    int dv;
+    int u_start;
+    int v;
+    int x;
+    int y;
+
+    if (!(state.command[GE_TEXTURE_ENABLE] & 1) || (state.command[GE_CLEARMODE] & 1))
+        return 0;
+
+    if ((state.command[GE_TEXFORMAT] & 0xf) != 3)
+        return 0;
+
+    if ((state.command[GE_FRAMEBUF_FORMAT] & 3) != 3)
+        return 0;
+
+    texture_width = 1 << (state.command[GE_TEXSIZE0] & 0xf);
+    texture_height = 1 << ((state.command[GE_TEXSIZE0] >> 8) & 0xf);
+    buffer_width = state.command[GE_TEXBUFWIDTH0] & 0x7ff;
+    swizzled = state.command[GE_TEXMODE] & 1;
+    clamp_x = state.command[GE_TEXWRAP] & 1;
+    clamp_y = (state.command[GE_TEXWRAP] >> 8) & 1;
+    texture = ge_pointer(buffer_address(GE_TEXADDR0, GE_TEXBUFWIDTH0));
+
+    if (!texture || !texture_width || !texture_height)
+        return 0;
+
+    if (!buffer_width)
+        buffer_width = texture_width;
+
+    if (!fast_sprite_target(
+        &left,
+        &top,
+        &right,
+        &bottom,
+        &frame,
+        &frame_width
+    ))
+        return 1;
+
+    blend = state.command[GE_BLEND_ENABLE] & 1;
+    alpha_test = state.command[GE_ALPHA_TEST_ENABLE] & 1;
+    alpha_command = state.command[GE_ALPHATEST];
+    direct_color =
+        (state.command[GE_TEXFUNC] & 7) == 3 ||
+        ((state.command[GE_TEXFUNC] & 7) == 0 && second.color == 0xffffffff);
+    use_alpha = state.command[GE_TEXFUNC] & 0x100;
+    du = (int)(
+        (second.u - first.u) * 65536.0f /
+        (second.x - first.x)
+    );
+    dv = (int)(
+        (second.v - first.v) * 65536.0f /
+        (second.y - first.y)
+    );
+    u_start =
+        (int)(first.u * 65536.0f) +
+        (int)((left - first.x) * du);
+    v =
+        (int)(first.v * 65536.0f) +
+        (int)((top - first.y) * dv);
+    row_bytes = buffer_width * 4;
+
+    if (direct_color && !blend && !alpha_test && !swizzled && du == 65536) {
+        int texture_x = u_start >> 16;
+        int span = right - left;
+
+        if (texture_x >= 0 && texture_x + span <= buffer_width) {
+            for (y = top; y < bottom; y++) {
+                int texture_y = v >> 16;
+                const u32 *source;
+                u32 *row = (u32 *)frame + y * frame_width + left;
+
+                if (clamp_y) {
+                    if (texture_y < 0)
+                        texture_y = 0;
+                    if (texture_y >= texture_height)
+                        texture_y = texture_height - 1;
+                } else {
+                    texture_y = (u32)texture_y & (texture_height - 1);
+                }
+
+                source = (const u32 *)(texture + texture_y * row_bytes) + texture_x;
+
+                if (use_alpha) {
+                    memcpy(row, source, span * sizeof(*row));
+                } else {
+                    u32 alpha = second.color & 0xff000000;
+
+                    for (x = 0; x < span; x++)
+                        row[x] = (source[x] & 0x00ffffff) | alpha;
+                }
+
+                v += dv;
+            }
+
+            return 1;
+        }
+    }
+
+    for (y = top; y < bottom; y++) {
+        int texture_y = v >> 16;
+        int u = u_start;
+        u32 *row = (u32 *)frame + y * frame_width + left;
+
+        if (clamp_y) {
+            if (texture_y < 0)
+                texture_y = 0;
+            if (texture_y >= texture_height)
+                texture_y = texture_height - 1;
+        } else {
+            texture_y = (u32)texture_y & (texture_height - 1);
+        }
+
+        for (x = left; x < right; x++) {
+            int texture_x = u >> 16;
+            int offset;
+            u32 color;
+
+            if (clamp_x) {
+                if (texture_x < 0)
+                    texture_x = 0;
+                if (texture_x >= texture_width)
+                    texture_x = texture_width - 1;
+            } else {
+                texture_x = (u32)texture_x & (texture_width - 1);
+            }
+
+            offset = pixel_offset(texture_x, texture_y, row_bytes, 4, swizzled);
+            color = *(const u32 *)(texture + offset);
+
+            if (direct_color) {
+                if (!use_alpha)
+                    color = (color & 0x00ffffff) | (second.color & 0xff000000);
+            } else {
+                color = shade_pixel(color, second.color);
+            }
+
+            if (alpha_test && !compare_alpha(
+                alpha_command & 7,
+                (color >> 24) & ((alpha_command >> 16) & 0xff),
+                (alpha_command >> 8) & ((alpha_command >> 16) & 0xff)
+            )) {
+                row++;
+                u += du;
+                continue;
+            }
+
+            if (!blend || (color >> 24) == 255) {
+                *row = color;
+            } else if (color >> 24) {
+                u32 destination = *row;
+                u32 alpha = color >> 24;
+                u32 inverse = 255 - alpha;
+                u32 red = ((color & 0xff) * alpha + (destination & 0xff) * inverse) / 255;
+                u32 green = (((color >> 8) & 0xff) * alpha + ((destination >> 8) & 0xff) * inverse) / 255;
+                u32 blue = (((color >> 16) & 0xff) * alpha + ((destination >> 16) & 0xff) * inverse) / 255;
+                u32 output_alpha = alpha + ((destination >> 24) * inverse) / 255;
+
+                *row = red | (green << 8) | (blue << 16) | (output_alpha << 24);
+            }
+
+            row++;
+            u += du;
+        }
+
+        v += dv;
+    }
+
+    return 1;
+}
+
 static void draw_sprite(GeVertex first, GeVertex second)
 {
     int left = (int)(first.x < second.x ? first.x : second.x);
@@ -875,6 +1305,12 @@ static void draw_sprite(GeVertex first, GeVertex second)
         return;
 
     if (draw_rgba5551_sprite(first, second, left, top, right, bottom))
+        return;
+
+    if (draw_clut4_sprite(first, second, left, top, right, bottom))
+        return;
+
+    if (draw_rgba8888_sprite(first, second, left, top, right, bottom))
         return;
 
     texture_on = (state.command[GE_TEXTURE_ENABLE] & 1) && !(state.command[GE_CLEARMODE] & 1);
@@ -1005,10 +1441,12 @@ static void draw_primitive(u32 argument)
     VertexLayout layout;
     int index;
 
-    if (!(type & (1 << 23)) || count <= 0)
+    if (count <= 0)
         return;
 
     layout = vertex_layout(type);
+    if (!(type & (1 << 23)))
+        return;
 
     if (primitive == 6) {
         for (index = 0; index + 1 < count; index += 2)
@@ -1153,7 +1591,6 @@ static void execute_list(GeList *list)
 
     if (commands >= GE_COMMAND_LIMIT)
         list->done = 1;
-
 }
 
 static int enqueue_list(u32 address, u32 stall)

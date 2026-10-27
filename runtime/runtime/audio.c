@@ -17,7 +17,15 @@ typedef struct {
     u32 output_channels;
 } AtracContext;
 
+typedef struct {
+    int initialized;
+    u32 core;
+    u32 grain;
+    u32 output_mode;
+} SasContext;
+
 static AtracContext atrac_ids[ATRAC_LIMIT];
+static SasContext sas;
 static u32 audio2_samples = 1024;
 static int audio2_reserved;
 
@@ -140,10 +148,72 @@ static u64 audio2_call(u32 nid, u32 a0)
     return 0;
 }
 
-static u64 sas_call(u32 nid, u32 a1)
+static int valid_sas_grain(u32 grain)
 {
+    return grain >= 0x40 && grain <= 0x800 && !(grain & 0x1f);
+}
+
+static u64 sas_mix(u32 address)
+{
+    void *buffer;
+    u32 channels;
+    u32 bytes;
+
+    if (!sas.initialized)
+        return (u32)-1;
+
+    channels = sas.output_mode ? 1 : 2;
+    bytes = sas.grain * channels * sizeof(int16_t);
+    buffer = audio_pointer(address, bytes);
+
+    if (!buffer)
+        return (u32)-1;
+
+    memset(buffer, 0, bytes);
+    return 0;
+}
+
+static u64 sas_call(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4)
+{
+    if (nid == 0x42778a9f) {
+        if ((a0 & 0x3f) || !audio_pointer(a0, sizeof(u32)) ||
+            !valid_sas_grain(a1) || !a2 || a2 > 32 || a3 > 1 || a4 != 44100)
+            return (u32)-1;
+
+        sas.initialized = 1;
+        sas.core = a0;
+        sas.grain = a1;
+        sas.output_mode = a3;
+        return 0;
+    }
+
+    if (nid == 0xa3589d81 || nid == 0x50a14dfc)
+        return sas_mix(a1);
+
+    if (nid == 0xbd11b7c2)
+        return sas.initialized ? sas.grain : (u32)-1;
+
+    if (nid == 0xd1e0a01e) {
+        if (!sas.initialized || !valid_sas_grain(a1))
+            return (u32)-1;
+
+        sas.grain = a1;
+        return 0;
+    }
+
+    if (nid == 0xe175ef66)
+        return sas.initialized ? sas.output_mode : (u32)-1;
+
+    if (nid == 0xe855bf76) {
+        if (!sas.initialized || a1 > 1)
+            return (u32)-1;
+
+        sas.output_mode = a1;
+        return 0;
+    }
+
     if (nid == 0x07f58c24) {
-        u32 *heights = psbridge_game_pointer((void *)(uintptr_t)a1);
+        u32 *heights = audio_pointer(a1, 32 * sizeof(u32));
 
         if (!heights)
             return (u32)-1;
@@ -164,7 +234,7 @@ u64 psbridge_audio(u32 library, u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4)
         return audio2_call(nid, a0);
 
     if (library == LIB_SAS)
-        return sas_call(nid, a1);
+        return sas_call(nid, a0, a1, a2, a3, a4);
 
     if (library == LIB_ATRAC)
         return atrac_call(nid, a0, a1, a2, a3, a4);

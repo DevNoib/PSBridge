@@ -5,6 +5,7 @@
 #include <timer.h>
 
 #include "psbridge.h"
+#include "psbridge_log.h"
 
 #define THREAD_ARG_SIZE 256
 #define THREAD_LIMIT 8
@@ -47,7 +48,7 @@ extern int psbridge_call_thread(
 static PspThread threads[THREAD_LIMIT];
 static PspMailbox mailboxes[MAILBOX_LIMIT];
 static int next_mailbox_uid = 0x3000;
-static unsigned char thread_stacks[THREAD_LIMIT] [THREAD_STACK_SIZE]
+static unsigned char thread_stacks[THREAD_LIMIT][THREAD_STACK_SIZE]
     __attribute__((aligned(16)));
 
 static PspThread *find_thread(int uid)
@@ -145,6 +146,15 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
             THREAD_STACK_SIZE -
             KERNEL_STACK_SIZE;
 
+        PSB_LOG(
+            THREAD,
+            "thread %d nasceu na putaria entrada %08x pilha pedida %d pilha dada %d",
+            threads[index].uid,
+            (u32)(uintptr_t)entry,
+            stack_size,
+            THREAD_STACK_SIZE - KERNEL_STACK_SIZE
+        );
+
         return threads[index].uid;
     }
 
@@ -154,6 +164,7 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
 int psbridge_start_thread(int uid, u32 arg_size, void *arg)
 {
     PspThread *thread = find_thread(uid);
+    u32 *words;
     int result;
 
     if (!thread)
@@ -177,6 +188,20 @@ int psbridge_start_thread(int uid, u32 arg_size, void *arg)
         thread->arg_size = copy_size;
         thread->arg = thread->arg_copy;
     }
+
+    words = thread->arg;
+
+    PSB_LOG(
+        THREAD,
+        "thread %d abriu o puteiro argumento %08x tamanho %u bagulho %08x %08x %08x %08x",
+        uid,
+        (u32)(uintptr_t)arg,
+        thread->arg_size,
+        words && thread->arg_size >= 4 ? words[0] : 0,
+        words && thread->arg_size >= 8 ? words[1] : 0,
+        words && thread->arg_size >= 12 ? words[2] : 0,
+        words && thread->arg_size >= 16 ? words[3] : 0
+    );
 
     result = StartThread(thread->thread_id, thread);
 
@@ -243,6 +268,7 @@ int psbridge_create_mailbox(const char *name, u32 attributes, void *options)
 int psbridge_send_mailbox(int uid, void *message)
 {
     PspMailbox *mailbox = find_mailbox(uid);
+    static u32 log_count;
     int result;
 
     if (!mailbox || !message)
@@ -269,6 +295,18 @@ int psbridge_send_mailbox(int uid, void *message)
 
     mailbox->count++;
 
+    if (log_count < 16) {
+        PSB_LOG(
+            MBX,
+            "thread %d gozou %08x na caixa %d fila %d",
+            psbridge_psp_thread_uid(),
+            (u32)(uintptr_t)message,
+            uid,
+            mailbox->count
+        );
+        log_count++;
+    }
+
     result = SignalSema(mailbox->lock);
 
     if (result < 0)
@@ -292,6 +330,7 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
     PspMailbox *mailbox = find_mailbox(uid);
     u32 *destination = psbridge_game_pointer(output);
     u32 *remaining = psbridge_game_pointer(timeout);
+    static u32 log_count;
     int result;
 
     if (!mailbox || !destination || (timeout && !remaining))
@@ -346,6 +385,42 @@ int psbridge_receive_mailbox(int uid, void *output, void *timeout)
     }
 
     *destination = mailbox->messages[mailbox->read_index];
+
+    if (log_count < 16) {
+        u32 *message = psbridge_game_pointer(
+            (void *)(uintptr_t)*destination
+        );
+        u32 *work = message ? psbridge_game_pointer(
+            (void *)(uintptr_t)message[2]
+        ) : NULL;
+
+        PSB_LOG(
+            MBX,
+            "thread %d lambeu a propria caceta e pegou %08x da caixa %d bagulho %08x %08x %08x %08x",
+            psbridge_psp_thread_uid(),
+            *destination,
+            uid,
+            message ? message[0] : 0,
+            message ? message[1] : 0,
+            message ? message[2] : 0,
+            message ? message[3] : 0
+        );
+
+        PSB_LOG(
+            MBX,
+            "mulher dj abriu o trampo %08x e achou %08x %08x %08x %08x %08x %08x %08x %08x",
+            message ? message[2] : 0,
+            work ? work[0] : 0,
+            work ? work[1] : 0,
+            work ? work[2] : 0,
+            work ? work[3] : 0,
+            work ? work[4] : 0,
+            work ? work[5] : 0,
+            work ? work[6] : 0,
+            work ? work[7] : 0
+        );
+        log_count++;
+    }
 
     mailbox->read_index =
         (mailbox->read_index + 1) % MAILBOX_MESSAGES;

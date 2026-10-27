@@ -40,9 +40,11 @@ static u64 system_time(void)
 #define LIB_SAS 0x1d46fbf4
 #define LIB_ATRAC 0x75263ea8
 
+void psbridge_mixer_probe(u32 library, u32 nid, u32 callsite);
+
 u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, u32 a5, u32 callsite)
 {
-    (void)callsite;
+    psbridge_mixer_probe(import->library, import->nid, callsite);
 
     if (import->library == LIB_SYSMEM) {
         if (import->nid == 0x13a5abef)
