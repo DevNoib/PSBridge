@@ -1,6 +1,3 @@
-//é aqui que toda magia negra acontece ops quero dizer magia branca
-//demorou pra caralho 1 hora pra escrever 1000 linhas to fudido
-
 #include <stdint.h>
 #include <string.h>
 #include <kernel.h>
@@ -106,11 +103,6 @@ static int align_value(int value, int alignment)
         return value;
 
     return (value + alignment - 1) & ~(alignment - 1);
-}
-
-static int signed_argument(u32 value)
-{
-    return (int)(value << 8) >> 8;
 }
 
 static void *ge_pointer(u32 address)
@@ -635,15 +627,6 @@ static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
     } else if (position == 3) {
         vertex.x = *(const float *)(data + layout.position);
         vertex.y = *(const float *)(data + layout.position + 4);
-    }
-
-    if (
-        (type & (1 << 23)) &&
-        ((type >> 2) & 7) &&
-        !(state.command[GE_CLEARMODE] & 1)
-    ) {
-        vertex.x += 2048.0f - signed_argument(state.command[GE_OFFSETX]) / 16.0f;
-        vertex.y += 2048.0f - signed_argument(state.command[GE_OFFSETY]) / 16.0f;
     }
 
     return vertex;

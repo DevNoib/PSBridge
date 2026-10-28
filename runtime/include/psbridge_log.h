@@ -12,6 +12,7 @@
 #define PSB_LOG_GFX 0
 #define PSB_LOG_AUDIO 0
 #define PSB_LOG_MEMORY 0
+#define PSB_LOG_VFPU 0
 
 #if PSB_LOG_MASTER
 #define PSB_LOG(area, format, ...) do { if (PSB_LOG_##area) printf(format "\n", ##__VA_ARGS__); } while (0)

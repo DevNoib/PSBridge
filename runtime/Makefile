@@ -2,13 +2,14 @@ BUILD_DIR = ../build
 RUNTIME_BUILD = $(BUILD_DIR)/runtime
 MAIN_OBJ = $(RUNTIME_BUILD)/main.o
 CORE_OBJS = $(addprefix $(RUNTIME_BUILD)/core/,imports.o guest.o vfpu_entry.o)
-API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,audio.o controller.o ge.o graphics.o io.o memory.o threadman.o lwmutex.o sync.o utility.o vfpu.o)
+VFPU_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/vfpu/,vfpu.o state.o memory.o math.o)
+API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,audio.o controller.o ge.o graphics.o io.o memory.o threadman.o lwmutex.o sync.o utility.o) $(VFPU_OBJS)
 RUNTIME_OBJS = $(MAIN_OBJ) $(CORE_OBJS) $(API_OBJS)
 
 EE_BIN = $(BUILD_DIR)/PSBridge-debug.elf
 STRIPPED_BIN = $(BUILD_DIR)/PSBridge-stripped.elf
 EE_OBJS = $(RUNTIME_OBJS) $(BUILD_DIR)/game.o
-EE_LIBS = -L$(GSKIT)/lib -lgskit -ldmakit -ldebug -lc -lpad
+EE_LIBS = -L$(GSKIT)/lib -lgskit -ldmakit -ldebug -lm -lc -lpad
 EE_INCS += -I$(CURDIR)/include -I$(GSKIT)/include
 EE_LDFLAGS = -Wl,-T$(CURDIR)/linker/guest.ld
 EE_ASFLAGS += -I$(abspath ..)
@@ -44,6 +45,10 @@ $(RUNTIME_BUILD)/core/vfpu_entry.o: core/vfpu_entry.S
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 $(RUNTIME_BUILD)/runtime/%.o: runtime/%.c
+	$(DIR_GUARD)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+$(RUNTIME_BUILD)/runtime/vfpu/%.o: runtime/vfpu/%.c
 	$(DIR_GUARD)
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
