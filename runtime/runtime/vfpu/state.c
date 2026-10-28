@@ -1,195 +1,139 @@
+#include "vfpu_internal.h"
 #include <math.h>
 #include <string.h>
 
-#include "vfpu.h"
-
-u32 vfpu_registers[VFPU_REGISTERS];
-u32 vfpu_controls[VFPU_CONTROLS];
-
+u32 vfpu_vr[128];
+u32 vfpu_ctrl[16];
 u32 vfpu_prefix_s = 0x000000e4;
 u32 vfpu_prefix_t = 0x000000e4;
 u32 vfpu_prefix_d;
-
 u8 vfpu_have_s;
 u8 vfpu_have_t;
 u8 vfpu_have_d;
+u32 vfpu_executed;
+u32 vfpu_unsupported;
+u32 vfpu_invalid_memory;
+u32 vfpu_last_unsupported;
+u32 vfpu_last_unsupported_pc;
+u32 vfpu_last_invalid_address;
 
-float vfpu_float(u32 bits)
+float vfpu_as_float(u32 bits)
 {
-    float value;
-
-    memcpy(&value, &bits, sizeof(value));
-    return value;
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
 }
-
-u32 vfpu_bits(float value)
+u32 vfpu_as_bits(float f)
 {
     u32 bits;
-
-    memcpy(&bits, &value, sizeof(bits));
+    memcpy(&bits, &f, 4);
     return bits;
 }
 
-int vfpu_vector_lane(int register_id, int size, int lane)
+int vfpu_vector_lane(int r, int n, int lane)
 {
-    int matrix = (register_id >> 2) & 7;
-    int column = register_id & 3;
-    int row;
-
-    if (size == 1)
-        row = (register_id >> 5) & 3;
-    else if (size == 3)
-        row = (register_id >> 6) & 1;
-    else
-        row = (register_id >> 5) & 2;
-
-    if (size != 1 && (register_id & 0x20))
-        return matrix * 4 + ((row + lane) & 3) + column * 32;
-
-    return matrix * 4 + column + ((row + lane) & 3) * 32;
+    int m = (r >> 2) & 7, col = r & 3;
+    int row = n == 1 ? (r >> 5) & 3 : n == 3 ? (r >> 6) & 1 : (r >> 5) & 2;
+    if (n != 1 && (r & 0x20))
+        return m * 4 + ((row + lane) & 3) + col * 32;
+    return m * 4 + col + ((row + lane) & 3) * 32;
+}
+int vfpu_matrix_lane(int r, int n, int column, int rowidx)
+{
+    int m = (r >> 2) & 7, col = r & 3;
+    int row = n == 3 ? (r >> 6) & 1 : (r >> 5) & 2;
+    if (r & 0x20)
+        return m * 4 + ((row + rowidx) & 3) + ((col + column) & 3) * 32;
+    return m * 4 + ((col + column) & 3) + ((row + rowidx) & 3) * 32;
+}
+void vfpu_read_vector(int r, int n, float out[4])
+{
+    int i;
+    for (i = 0; i < n; i++)
+        out[i] = vfpu_as_float(vfpu_vr[vfpu_vector_lane(r, n, i)]);
 }
 
-int vfpu_matrix_lane(int register_id, int size, int column, int row)
+void vfpu_read_prefix(int r, int n, float out[4], u32 p, int active)
 {
-    int matrix = (register_id >> 2) & 7;
-    int first_column = register_id & 3;
-    int first_row;
-
-    if (size == 3)
-        first_row = (register_id >> 6) & 1;
-    else
-        first_row = (register_id >> 5) & 2;
-
-    if (register_id & 0x20) {
-        return matrix * 4
-            + ((first_row + row) & 3)
-            + ((first_column + column) & 3) * 32;
-    }
-
-    return matrix * 4
-        + ((first_column + column) & 3)
-        + ((first_row + row) & 3) * 32;
-}
-
-void vfpu_read_vector(int register_id, int size, float output[VFPU_VECTOR_SIZE])
-{
-    int index;
-
-    for (index = 0; index < size; index++) {
-        output[index] = vfpu_float(
-            vfpu_registers[vfpu_vector_lane(register_id, size, index)]
-        );
-    }
-}
-
-void vfpu_read_prefix(
-    int register_id,
-    int size,
-    float output[VFPU_VECTOR_SIZE],
-    u32 prefix,
-    int enabled
-)
-{
-    static const float constants[8] = {
-        0.0f, 1.0f, 2.0f, 0.5f,
-        3.0f, 1.0f / 3.0f, 0.25f, 1.0f / 6.0f
-    };
-
-    float original[VFPU_VECTOR_SIZE] = { 0 };
-    int index;
-
-    vfpu_read_vector(register_id, size, original);
-
-    if (!enabled) {
-        memcpy(output, original, sizeof(original));
+    float original[4] = {0, 0, 0, 0};
+    int i;
+    vfpu_read_vector(r, n, original);
+    if (!active)
+    {
+        memcpy(out, original, sizeof(original));
         return;
     }
-
-    for (index = 0; index < size; index++) {
-        int component = (prefix >> (index * 2)) & 3;
-        float value = original[component < size ? component : 0];
-
-        if (prefix & (1u << (12 + index))) {
-            int constant = component | (((prefix >> (8 + index)) & 1) * 4);
-            value = constants[constant];
-        } else if (prefix & (1u << (8 + index))) {
-            value = fabsf(value);
+    for (i = 0; i < n; i++)
+    {
+        int src = (p >> (i * 2)) & 3;
+        float v = original[src < n ? src : 0];
+        if (p & (1u << (12 + i)))
+        {
+            static const float constants[8] = {0.0f, 1.0f,        2.0f,  0.5f,
+                                               3.0f, 1.0f / 3.0f, 0.25f, 1.0f / 6.0f};
+            v = constants[src | ((p >> (8 + i)) & 1) * 4];
         }
-
-        if (prefix & (1u << (16 + index)))
-            value = -value;
-
-        output[index] = value;
+        else if (p & (1u << (8 + i)))
+            v = fabsf(v);
+        if (p & (1u << (16 + i)))
+            v = -v;
+        out[i] = v;
     }
 }
-
-void vfpu_write_vector(
-    int register_id,
-    int size,
-    const float input[VFPU_VECTOR_SIZE],
-    int use_prefix
-)
+void vfpu_write_vector(int r, int n, const float in[4], int use_prefix)
 {
-    int index;
-
-    for (index = 0; index < size; index++) {
-        float value = input[index];
-
-        if (use_prefix && vfpu_have_d) {
-            int saturation = (vfpu_prefix_d >> (index * 2)) & 3;
-
-            if (saturation == 1) {
-                if (value < 0)
-                    value = 0;
-                if (value > 1)
-                    value = 1;
+    int i;
+    for (i = 0; i < n; i++)
+    {
+        float v = in[i];
+        if (use_prefix && vfpu_have_d)
+        {
+            int sat = (vfpu_prefix_d >> (i * 2)) & 3;
+            if (sat == 1)
+            {
+                if (v < 0)
+                    v = 0;
+                if (v > 1)
+                    v = 1;
             }
-
-            if (saturation == 3) {
-                if (value < -1)
-                    value = -1;
-                if (value > 1)
-                    value = 1;
+            if (sat == 3)
+            {
+                if (v < -1)
+                    v = -1;
+                if (v > 1)
+                    v = 1;
             }
-
-            if (vfpu_prefix_d & (1u << (8 + index)))
+            if (vfpu_prefix_d & (1u << (8 + i)))
                 continue;
         }
-
-        vfpu_registers[vfpu_vector_lane(register_id, size, index)] = vfpu_bits(value);
+        vfpu_vr[vfpu_vector_lane(r, n, i)] = vfpu_as_bits(v);
     }
 }
 
 void vfpu_finish_prefix(void)
 {
-    vfpu_have_s = 0;
-    vfpu_have_t = 0;
-    vfpu_have_d = 0;
+    vfpu_have_s = vfpu_have_t = vfpu_have_d = 0;
 }
 
-void vfpu_read_matrix(int register_id, int size, float output[4][4])
+void vfpu_matrix_read(int r, int n, float mat[4][4])
 {
-    int column;
-    int row;
-
-    for (column = 0; column < size; column++) {
-        for (row = 0; row < size; row++) {
-            output[column][row] = vfpu_float(
-                vfpu_registers[vfpu_matrix_lane(register_id, size, column, row)]
-            );
-        }
-    }
+    int j, k;
+    for (j = 0; j < n; j++)
+        for (k = 0; k < n; k++)
+            mat[j][k] = vfpu_as_float(vfpu_vr[vfpu_matrix_lane(r, n, j, k)]);
 }
 
-void vfpu_write_matrix(int register_id, int size, float input[4][4])
+void vfpu_matrix_write(int r, int n, float mat[4][4])
 {
-    int column;
-    int row;
+    int j, k;
+    for (j = 0; j < n; j++)
+        for (k = 0; k < n; k++)
+            vfpu_vr[vfpu_matrix_lane(r, n, j, k)] = vfpu_as_bits(mat[j][k]);
+}
 
-    for (column = 0; column < size; column++) {
-        for (row = 0; row < size; row++) {
-            vfpu_registers[vfpu_matrix_lane(register_id, size, column, row)] =
-                vfpu_bits(input[column][row]);
-        }
-    }
+void vfpu_unsupported_op(u32 op, u32 pc)
+{
+    vfpu_unsupported++;
+    vfpu_last_unsupported = op;
+    vfpu_last_unsupported_pc = pc;
 }

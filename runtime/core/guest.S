@@ -79,7 +79,7 @@ psbridge_import:
     .globl psbridge_resolve_guest
     .ent psbridge_resolve_guest
 psbridge_resolve_guest:
-    addiu $sp, $sp, -32
+    addiu $sp, $sp, -48
     sw $1, 0($sp)
     sw $2, 4($sp)
     sw $3, 8($sp)
@@ -175,7 +175,15 @@ guest_resolve_done:
     lw $7, 0($5)
     subu $1, $25, $4
     addu $7, $7, $1
+    sw $7, 36($sp)
+    subu $6, $6, $1
+    srl $6, $6, 2
+    sw $6, 40($sp)
     lw $7, 0($7)
+    sw $7, 44($sp)
+
+    sw $0, 28($sp)
+    sw $0, 32($sp)
     lui $3, %hi(overlay_map_count)
     lw $3, %lo(overlay_map_count)($3)
     lui $5, %hi(overlay_map)
@@ -184,7 +192,7 @@ guest_resolve_done:
 
 guest_resolve_overlay_loop:
     sltu $1, $2, $3
-    beq $1, $0, guest_resolve_restore
+    beq $1, $0, guest_resolve_overlay_best
     nop
 
     sll $4, $2, 3
@@ -196,16 +204,77 @@ guest_resolve_overlay_loop:
     nop
 
     lw $6, 4($4)
+    lw $7, 44($sp)
     bne $6, $7, guest_resolve_overlay_next
     nop
 
-    lw $25, 8($4)
-    b guest_resolve_restore
+    ori $1, $0, 1
+
+guest_resolve_overlay_fingerprint:
+    sltiu $6, $1, 12
+    beq $6, $0, guest_resolve_overlay_candidate
     nop
+
+    addu $6, $2, $1
+    sltu $6, $6, $3
+    beq $6, $0, guest_resolve_overlay_candidate
+    nop
+
+    lw $6, 40($sp)
+    sltu $6, $1, $6
+    beq $6, $0, guest_resolve_overlay_candidate
+    nop
+
+    sll $6, $1, 3
+    sll $7, $1, 2
+    addu $6, $6, $7
+    addu $6, $4, $6
+    lw $7, 0($6)
+    sll $6, $1, 2
+    addu $6, $25, $6
+    bne $7, $6, guest_resolve_overlay_candidate
+    nop
+
+    sll $6, $1, 3
+    sll $7, $1, 2
+    addu $6, $6, $7
+    addu $6, $4, $6
+    lw $7, 4($6)
+    lw $6, 36($sp)
+    sll $5, $1, 2
+    addu $6, $6, $5
+    lw $6, 0($6)
+    bne $7, $6, guest_resolve_overlay_candidate
+    nop
+
+    addiu $1, $1, 1
+    b guest_resolve_overlay_fingerprint
+    nop
+
+guest_resolve_overlay_candidate:
+    lw $6, 28($sp)
+    sltu $6, $6, $1
+    beq $6, $0, guest_resolve_overlay_next
+    nop
+
+    sw $1, 28($sp)
+    lw $6, 8($4)
+    sw $6, 32($sp)
 
 guest_resolve_overlay_next:
     addiu $2, $2, 1
+    lui $5, %hi(overlay_map)
+    addiu $5, $5, %lo(overlay_map)
     b guest_resolve_overlay_loop
+    nop
+
+guest_resolve_overlay_best:
+    lw $6, 28($sp)
+    beq $6, $0, guest_resolve_restore
+    nop
+
+    lw $25, 32($sp)
+    b guest_resolve_restore
     nop
 
 guest_resolve_restore:
@@ -216,7 +285,7 @@ guest_resolve_restore:
     lw $5, 16($sp)
     lw $6, 20($sp)
     lw $7, 24($sp)
-    addiu $sp, $sp, 32
+    addiu $sp, $sp, 48
     jr $ra
     nop
     .end psbridge_resolve_guest

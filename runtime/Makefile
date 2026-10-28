@@ -2,9 +2,9 @@ BUILD_DIR = ../build
 RUNTIME_BUILD = $(BUILD_DIR)/runtime
 MAIN_OBJ = $(RUNTIME_BUILD)/main.o
 CORE_OBJS = $(addprefix $(RUNTIME_BUILD)/core/,imports.o guest.o vfpu_entry.o)
-VFPU_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/vfpu/,vfpu.o state.o memory.o math.o)
-API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,audio.o controller.o ge.o graphics.o io.o memory.o threadman.o lwmutex.o sync.o utility.o) $(VFPU_OBJS)
-RUNTIME_OBJS = $(MAIN_OBJ) $(CORE_OBJS) $(API_OBJS)
+API_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/,audio.o controller.o ge.o graphics.o io.o memory.o threadman.o lwmutex.o sync.o utility.o vfpu.o)
+VFPU_OBJS = $(addprefix $(RUNTIME_BUILD)/runtime/vfpu/,state.o memory.o operations.o)
+RUNTIME_OBJS = $(MAIN_OBJ) $(CORE_OBJS) $(API_OBJS) $(VFPU_OBJS)
 
 EE_BIN = $(BUILD_DIR)/PSBridge-debug.elf
 STRIPPED_BIN = $(BUILD_DIR)/PSBridge-stripped.elf
@@ -53,7 +53,7 @@ $(RUNTIME_BUILD)/runtime/vfpu/%.o: runtime/vfpu/%.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 clean:
-	rm -f $(EE_BIN) $(STRIPPED_BIN) $(BUILD_DIR)/psbridge.elf $(RUNTIME_OBJS) $(BUILD_DIR)/game.o
+	rm -f $(EE_BIN) $(STRIPPED_BIN) $(BUILD_DIR)/psbridge.elf $(RUNTIME_OBJS) $(RUNTIME_BUILD)/runtime/vfpu/*.o $(BUILD_DIR)/game.o
 
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal
