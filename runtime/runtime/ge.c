@@ -422,10 +422,9 @@ static u32 shade_pixel(u32 texture, u32 vertex)
     else if (function != 1 && use_alpha)
         output_alpha = (texture_alpha * vertex_alpha) / 255;
 
-    if (function ==0) {
-        vertex = 0xffffffff;
-
-    }
+    if (function == 0 && (vertex & 0x00ffffff) == 0) {
+    vertex = (vertex & 0xff000000) | 0x00ffffff;
+}
 
     for (channel = 0; channel < 3; channel++) {
         u32 shift = channel * 8;
