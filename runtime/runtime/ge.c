@@ -3,6 +3,7 @@
 #include <kernel.h>
 
 #include "psbridge.h"
+#include "psbridge_log.h"
 
 #define GE_LIST_LIMIT 16
 #define GE_STACK_LIMIT 8
@@ -161,6 +162,8 @@ static u32 unpack_color(u16 color, int format)
         alpha = ((color >> 12) & 0x0f) * 17;
     }
 
+    
+
     return red | (green << 8) | (blue << 16) | (alpha << 24);
 }
 
@@ -318,6 +321,8 @@ static u32 texture_pixel(int x, int y)
     if (!texture || !width || !height)
         return 0;
 
+    
+
     if (clamp_x) {
         if (x < 0)
             x = 0;
@@ -400,6 +405,11 @@ static u32 shade_pixel(u32 texture, u32 vertex)
         output_alpha = use_alpha ? texture_alpha : vertex_alpha;
     else if (function != 1 && use_alpha)
         output_alpha = (texture_alpha * vertex_alpha) / 255;
+
+    if (function ==0) {
+        vertex = 0xffffffff;
+
+    }
 
     for (channel = 0; channel < 3; channel++) {
         u32 shift = channel * 8;
@@ -484,6 +494,14 @@ static void draw_pixel(int x, int y, u32 color)
             color = (color & 0x00ffffff) | (destination & 0xff000000);
     } else if (state.command[GE_BLEND_ENABLE] & 1) {
         destination = read_frame_pixel(frame, index, format);
+
+        if (
+            (state.command[GE_TEXTURE_ENABLE] & 1) &&
+            ((state.command[GE_TEXFUNC] & 7) == 0)
+        ) {
+            color = (color & 0x00ffffff) | 0xff000000;
+        }
+        
         color = blend_color(color, destination);
     }
 
@@ -557,6 +575,7 @@ static VertexLayout vertex_layout(u32 type)
         biggest = position_align[position];
 
     layout.stride = align_value(size, biggest) * morph_count;
+
     return layout;
 }
 
@@ -1541,6 +1560,24 @@ static void execute_list(GeList *list)
         argument = word & 0x00ffffff;
         list->pc += 4;
         state.command[command] = argument;
+
+        if (command == GE_TEXFUNC || command == GE_VERTEXTYPE || command == GE_TEXFORMAT) {
+
+            static int ge_rgb01_logs = 0;
+
+            if (ge_rgb01_logs < 18) {
+                ge_rgb01_logs++;
+
+                PSB_LOG(
+                    GE,
+                    "ge recebeu uma leitada %08x com a potencia de mil homens %06x",
+                    (unsigned int)command,
+                    (unsigned int)argument
+                );
+            }
+
+        }
+
 
         if (command == GE_VADDR)
             state.vertex_address = relative_address(argument);
