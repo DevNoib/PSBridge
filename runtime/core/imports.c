@@ -101,6 +101,21 @@ u64 psbridge_dispatch(const PspImport *import, u32 a0, u32 a1, u32 a2, u32 a3, u
 
             if (
                 device &&
+                (!strcmp(device, "umd0:") || !strcmp(device, "umd1:")) &&
+                a1 == 0x01f300a7 &&
+                a2 &&
+                a3 >= sizeof(u32)
+            ) {
+                const void *cache_request = psbridge_game_pointer(
+                    (void *)(uintptr_t)a2
+                );
+
+                if (cache_request)
+                    return 0;
+            }
+
+            if (
+                device &&
                 !strcmp(device, "fatms0:") &&
                 a1 == 0x2415821 &&
                 a2 &&
