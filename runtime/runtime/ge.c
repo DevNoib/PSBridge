@@ -90,6 +90,21 @@ typedef struct {
     int stride;
 } VertexLayout;
 
+typedef struct {
+    const u8 *texture;
+    u32 *frame;
+    u32 colors[256];
+    u8 visible[256];
+    int texture_width;
+    int texture_height;
+    int row_bytes;
+    int frame_width;
+    int format;
+    int swizzled;
+    int clamp_x;
+    int clamp_y;
+} TrianglePalette;
+
 static GeList lists[GE_LIST_LIMIT];
 static GeState state;
 static u8 ge_clut[1024] __attribute__((aligned(4)));
@@ -441,6 +456,117 @@ static u32 shade_pixel(u32 texture, u32 vertex)
     }
 
     return result | (output_alpha << 24);
+}
+
+static int prepare_triangle_palette(TrianglePalette *fast)
+{
+    int buffer_width;
+    int entries;
+    int use_alpha;
+    int blend;
+    int alpha_test;
+    u32 alpha_command;
+    int index;
+
+    fast->format = state.command[GE_TEXFORMAT] & 0xf;
+
+    if (fast->format != 4 && fast->format != 5)
+        return 0;
+    if ((state.command[GE_FRAMEBUF_FORMAT] & 3) != 3)
+        return 0;
+    if ((state.command[GE_TEXFUNC] & 7) != 0)
+        return 0;
+
+    fast->texture_width = 1 << (state.command[GE_TEXSIZE0] & 0xf);
+    fast->texture_height = 1 << ((state.command[GE_TEXSIZE0] >> 8) & 0xf);
+    buffer_width = state.command[GE_TEXBUFWIDTH0] & 0x7ff;
+
+    if (!buffer_width)
+        buffer_width = fast->texture_width;
+
+    fast->texture = ge_pointer(buffer_address(GE_TEXADDR0, GE_TEXBUFWIDTH0));
+    fast->frame = ge_pointer(buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH));
+    fast->frame_width = state.command[GE_VADDR_WIDTH] & 0x7fc;
+    fast->row_bytes = fast->format == 4 ? (buffer_width + 1) >> 1 : buffer_width;
+    fast->swizzled = state.command[GE_TEXMODE] & 1;
+    fast->clamp_x = state.command[GE_TEXWRAP] & 1;
+    fast->clamp_y = (state.command[GE_TEXWRAP] >> 8) & 1;
+
+    if (!fast->texture || !fast->frame || fast->frame_width < 64)
+        return 0;
+
+    use_alpha = state.command[GE_TEXFUNC] & 0x100;
+    blend = state.command[GE_BLEND_ENABLE] & 1;
+    alpha_test = state.command[GE_ALPHA_TEST_ENABLE] & 1;
+    alpha_command = state.command[GE_ALPHATEST];
+
+    entries = fast->format == 4 ? 16 : 256;
+
+    for (index = 0; index < entries; index++) {
+        u32 color = palette_color(index);
+
+        if (!use_alpha)
+            color |= 0xff000000;
+
+        fast->visible[index] = !alpha_test || compare_alpha(
+            alpha_command & 7,
+            (color >> 24) & ((alpha_command >> 16) & 0xff),
+            (alpha_command >> 8) & ((alpha_command >> 16) & 0xff)
+        );
+
+        fast->colors[index] = blend ? color | 0xff000000 : color;
+    }
+
+    return 1;
+}
+
+static inline int triangle_palette_pixel(
+    const TrianglePalette *fast,
+    int x,
+    int y,
+    u32 *color
+)
+{
+    int offset;
+    u8 packed;
+    int index;
+
+    if (fast->clamp_x) {
+        if (x < 0)
+            x = 0;
+        if (x >= fast->texture_width)
+            x = fast->texture_width - 1;
+    } else {
+        x = (u32)x & (fast->texture_width - 1);
+    }
+
+    if (fast->clamp_y) {
+        if (y < 0)
+            y = 0;
+        if (y >= fast->texture_height)
+            y = fast->texture_height - 1;
+    } else {
+        y = (u32)y & (fast->texture_height - 1);
+    }
+
+    if (fast->format == 4) {
+        if (fast->swizzled)
+            offset = pixel_offset(x >> 1, y, fast->row_bytes, 1, 1);
+        else
+            offset = y * fast->row_bytes + (x >> 1);
+
+        packed = fast->texture[offset];
+        index = (x & 1) ? packed >> 4 : packed & 0x0f;
+    } else {
+        offset = pixel_offset(x, y, fast->row_bytes, 1, fast->swizzled);
+        index = fast->texture[offset];
+    }
+
+    if (!fast->visible[index])
+        return 0;
+
+    *color = fast->colors[index];
+    return 1;
 }
 
 static void draw_pixel(int x, int y, u32 color)
@@ -1368,23 +1494,67 @@ static float edge(GeVertex a, GeVertex b, float x, float y)
     return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
 }
 
-static u32 mix_color(u32 a, u32 b, u32 c, float wa, float wb, float wc)
-{
-    int red = (int)((a & 0xff) * wa + (b & 0xff) * wb + (c & 0xff) * wc);
-    int green = (int)(((a >> 8) & 0xff) * wa + ((b >> 8) & 0xff) * wb + ((c >> 8) & 0xff) * wc);
-    int blue = (int)(((a >> 16) & 0xff) * wa + ((b >> 16) & 0xff) * wb + ((c >> 16) & 0xff) * wc);
-    int alpha = (int)((a >> 24) * wa + (b >> 24) * wb + (c >> 24) * wc);
-
-    return red | (green << 8) | (blue << 16) | (alpha << 24);
-}
-
 static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
 {
+    TrianglePalette fast;
     float area = edge(a, b, c.x, c.y);
+    float inverse_area;
+    float wa_row;
+    float wb_row;
+    float wa_dx;
+    float wb_dx;
+    float wa_dy;
+    float wb_dy;
+    float red_row;
+    float green_row;
+    float blue_row;
+    float alpha_row;
+    float u_row;
+    float v_row;
+    float red_dx;
+    float green_dx;
+    float blue_dx;
+    float alpha_dx;
+    float u_dx;
+    float v_dx;
+    float red_dy;
+    float green_dy;
+    float blue_dy;
+    float alpha_dy;
+    float u_dy;
+    float v_dy;
+
+    float ar = a.color & 0xff;
+    float ag = (a.color >> 8) & 0xff;
+    float ab = (a.color >> 16) & 0xff;
+    float aa = a.color >> 24;
+
+    float br = b.color & 0xff;
+    float bg = (b.color >> 8) & 0xff;
+    float bb = (b.color >> 16) & 0xff;
+    float ba = b.color >> 24;
+
+    float cr = c.color & 0xff;
+    float cg = (c.color >> 8) & 0xff;
+    float cb = (c.color >> 16) & 0xff;
+    float ca = c.color >> 24;
+
     int left = (int)a.x;
     int top = (int)a.y;
     int right = (int)a.x;
     int bottom = (int)a.y;
+
+    int frame_width = state.command[GE_VADDR_WIDTH] & 0x7fc;
+    int scissor_left = state.command[GE_SCISSOR1] & 0x3ff;
+    int scissor_top = (state.command[GE_SCISSOR1] >> 10) & 0x3ff;
+    int scissor_right = state.command[GE_SCISSOR2] & 0x3ff;
+    int scissor_bottom = (state.command[GE_SCISSOR2] >> 10) & 0x3ff;
+
+    int textured =
+        (state.command[GE_TEXTURE_ENABLE] & 1) &&
+        !(state.command[GE_CLEARMODE] & 1);
+
+    int fast_palette;
     int x;
     int y;
 
@@ -1399,6 +1569,7 @@ static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
         top = (int)b.y;
     if (c.y < top)
         top = (int)c.y;
+
     if (b.x > right)
         right = (int)b.x;
     if (c.x > right)
@@ -1408,30 +1579,153 @@ static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
     if (c.y > bottom)
         bottom = (int)c.y;
 
-    for (y = top; y <= bottom; y++) {
-        for (x = left; x <= right; x++) {
-            float wa = edge(b, c, x + 0.5f, y + 0.5f) / area;
-            float wb = edge(c, a, x + 0.5f, y + 0.5f) / area;
-            float wc = 1.0f - wa - wb;
-            u32 color;
+    if (!state.command[GE_SCISSOR2]) {
+        scissor_right = 479;
+        scissor_bottom = 271;
+    }
 
-            if (wa < 0.0f || wb < 0.0f || wc < 0.0f)
-                continue;
+    if (left < scissor_left)
+        left = scissor_left;
+    if (top < scissor_top)
+        top = scissor_top;
+    if (right > scissor_right)
+        right = scissor_right;
+    if (bottom > scissor_bottom)
+        bottom = scissor_bottom;
 
-            color = mix_color(a.color, b.color, c.color, wa, wb, wc);
+    if (left < 0)
+        left = 0;
+    if (top < 0)
+        top = 0;
+    if (right >= frame_width)
+        right = frame_width - 1;
+    if (bottom >= 512)
+        bottom = 511;
 
-            if (
-                (state.command[GE_TEXTURE_ENABLE] & 1) &&
-                !(state.command[GE_CLEARMODE] & 1)
-            ) {
-                float u = a.u * wa + b.u * wb + c.u * wc;
-                float v = a.v * wa + b.v * wb + c.v * wc;
+    if (right < left || bottom < top)
+        return;
 
-                color = shade_pixel(texture_pixel((int)u, (int)v), color);
+    fast_palette = textured && prepare_triangle_palette(&fast);
+
+    inverse_area = 1.0f / area;
+
+    wa_row = edge(b, c, left + 0.5f, top + 0.5f) * inverse_area;
+    wb_row = edge(c, a, left + 0.5f, top + 0.5f) * inverse_area;
+
+    wa_dx = (c.y - b.y) * inverse_area;
+    wb_dx = (a.y - c.y) * inverse_area;
+    wa_dy = (b.x - c.x) * inverse_area;
+    wb_dy = (c.x - a.x) * inverse_area;
+
+    u_row = c.u + wa_row * (a.u - c.u) + wb_row * (b.u - c.u);
+    v_row = c.v + wa_row * (a.v - c.v) + wb_row * (b.v - c.v);
+
+    if (fast_palette) {
+        u_dx = wa_dx * (a.u - c.u) + wb_dx * (b.u - c.u);
+        v_dx = wa_dx * (a.v - c.v) + wb_dx * (b.v - c.v);
+        u_dy = wa_dy * (a.u - c.u) + wb_dy * (b.u - c.u);
+        v_dy = wa_dy * (a.v - c.v) + wb_dy * (b.v - c.v);
+
+        for (y = top; y <= bottom; y++) {
+            float wa = wa_row;
+            float wb = wb_row;
+            float u = u_row;
+            float v = v_row;
+
+            u32 *row = fast.frame + y * fast.frame_width + left;
+
+            for (x = left; x <= right; x++) {
+                float wc = 1.0f - wa - wb;
+
+                if (wa >= 0.0f && wb >= 0.0f && wc >= 0.0f) {
+                    u32 color;
+
+                    if (triangle_palette_pixel(
+                        &fast, (int)u, (int)v, &color
+                    ))
+                        row[x - left] = color;
+                }
+
+                wa += wa_dx;
+                wb += wb_dx;
+                u += u_dx;
+                v += v_dx;
             }
 
-            draw_pixel(x, y, color);
+            wa_row += wa_dy;
+            wb_row += wb_dy;
+            u_row += u_dy;
+            v_row += v_dy;
         }
+
+        return;
+    }
+
+    red_row = cr + wa_row * (ar - cr) + wb_row * (br - cr);
+    green_row = cg + wa_row * (ag - cg) + wb_row * (bg - cg);
+    blue_row = cb + wa_row * (ab - cb) + wb_row * (bb - cb);
+    alpha_row = ca + wa_row * (aa - ca) + wb_row * (ba - ca);
+
+    red_dx = wa_dx * (ar - cr) + wb_dx * (br - cr);
+    green_dx = wa_dx * (ag - cg) + wb_dx * (bg - cg);
+    blue_dx = wa_dx * (ab - cb) + wb_dx * (bb - cb);
+    alpha_dx = wa_dx * (aa - ca) + wb_dx * (ba - ca);
+    u_dx = wa_dx * (a.u - c.u) + wb_dx * (b.u - c.u);
+    v_dx = wa_dx * (a.v - c.v) + wb_dx * (b.v - c.v);
+
+    red_dy = wa_dy * (ar - cr) + wb_dy * (br - cr);
+    green_dy = wa_dy * (ag - cg) + wb_dy * (bg - cg);
+    blue_dy = wa_dy * (ab - cb) + wb_dy * (bb - cb);
+    alpha_dy = wa_dy * (aa - ca) + wb_dy * (ba - ca);
+    u_dy = wa_dy * (a.u - c.u) + wb_dy * (b.u - c.u);
+    v_dy = wa_dy * (a.v - c.v) + wb_dy * (b.v - c.v);
+
+    for (y = top; y <= bottom; y++) {
+        float wa = wa_row;
+        float wb = wb_row;
+        float red = red_row;
+        float green = green_row;
+        float blue = blue_row;
+        float alpha = alpha_row;
+        float u = u_row;
+        float v = v_row;
+
+        for (x = left; x <= right; x++) {
+            float wc = 1.0f - wa - wb;
+
+            if (wa >= 0.0f && wb >= 0.0f && wc >= 0.0f) {
+                u32 color =
+                    (u32)(int)red |
+                    ((u32)(int)green << 8) |
+                    ((u32)(int)blue << 16) |
+                    ((u32)(int)alpha << 24);
+
+                if (textured)
+                    color = shade_pixel(
+                        texture_pixel((int)u, (int)v), color
+                    );
+
+                draw_pixel(x, y, color);
+            }
+
+            wa += wa_dx;
+            wb += wb_dx;
+            red += red_dx;
+            green += green_dx;
+            blue += blue_dx;
+            alpha += alpha_dx;
+            u += u_dx;
+            v += v_dx;
+        }
+
+        wa_row += wa_dy;
+        wb_row += wb_dy;
+        red_row += red_dy;
+        green_row += green_dy;
+        blue_row += blue_dy;
+        alpha_row += alpha_dy;
+        u_row += u_dy;
+        v_row += v_dy;
     }
 }
 
