@@ -100,6 +100,7 @@ typedef struct {
     int row_bytes;
     int frame_width;
     int format;
+    int blend;
     int swizzled;
     int clamp_x;
     int clamp_y;
@@ -497,6 +498,7 @@ static int prepare_triangle_palette(TrianglePalette *fast)
 
     use_alpha = state.command[GE_TEXFUNC] & 0x100;
     blend = state.command[GE_BLEND_ENABLE] & 1;
+    fast->blend = blend;
     alpha_test = state.command[GE_ALPHA_TEST_ENABLE] & 1;
     alpha_command = state.command[GE_ALPHATEST];
 
@@ -514,7 +516,7 @@ static int prepare_triangle_palette(TrianglePalette *fast)
             (alpha_command >> 8) & ((alpha_command >> 16) & 0xff)
         );
 
-        fast->colors[index] = blend ? color | 0xff000000 : color;
+        fast->colors[index] = color;
     }
 
     return 1;
@@ -1640,10 +1642,15 @@ static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
                 if (wa >= 0.0f && wb >= 0.0f && wc >= 0.0f) {
                     u32 color;
 
-                    if (triangle_palette_pixel(
-                        &fast, (int)u, (int)v, &color
-                    ))
-                        row[x - left] = color;
+                    if (triangle_palette_pixel(&fast, (int)u, (int)v, &color)) {
+                        u32 *destination = &row[x - left];
+                        u32 alpha = color >> 24;
+
+                         if (!fast.blend || alpha == 255)
+                              *destination = color;
+                         else if (alpha != 0)
+                              *destination = blend_color(color, *destination);
+                    }
                 }
 
                 wa += wa_dx;
