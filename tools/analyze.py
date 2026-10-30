@@ -132,7 +132,7 @@ def find_jump_tables(code, word_locations):
                 break
 
         if load_index is None:
-            raise ValueError(f"não achei a tabela do jr em 0x{address:08x}")
+            continue
 
         load = instructions[load_index][1]
         base_register = load[2]
@@ -152,7 +152,7 @@ def find_jump_tables(code, word_locations):
                 break
 
         if add_index is None:
-            raise ValueError(f"não achei a base da tabela em 0x{address:08x}")
+            continue
 
         add = instructions[add_index][1]
 
@@ -172,6 +172,8 @@ def find_jump_tables(code, word_locations):
         }
         bases &= word_locations
 
+        if not bases:
+            continue
         if len(bases) != 1:
             raise ValueError(f"a tabela do jr em 0x{address:08x} sumiu")
 

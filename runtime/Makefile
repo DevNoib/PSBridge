@@ -18,6 +18,8 @@ EE_ASFLAGS += -I$(abspath ..)
 
 all: $(EE_BIN) $(STRIPPED_BIN)
 
+$(EE_BIN): linker/guest.ld
+
 $(STRIPPED_BIN): $(EE_BIN)
 	cp $< $@
 	$(EE_STRIP) --strip-all $@

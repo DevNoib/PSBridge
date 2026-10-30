@@ -62,6 +62,163 @@ def emit_vfpu_dispatch(opcode, address):
     ]
 
 
+def emit_msub(instruction):
+    name, rs, rt, _ = instruction
+    scratch = (26, 27, 1, 25)
+    source_rs, source_rt = rs, rt
+    lines = ["addiu $sp, $sp, -32"]
+
+    for index, register in enumerate(scratch):
+        lines.append(f"sw {reg(register)}, {index * 4}($sp)")
+
+    lines.extend([
+        "mfhi1 $26",
+        "sw $26, 16($sp)",
+        "mflo1 $26",
+        "sw $26, 20($sp)",
+    ])
+
+    for index, register in enumerate(scratch):
+        lines.append(f"lw {reg(register)}, {index * 4}($sp)")
+
+    if rs == 29 or rt == 29:
+        temporary = next(item for item in scratch if item not in (rs, rt))
+        lines.append(f"addiu {reg(temporary)}, $sp, 32")
+        source_rs = temporary if rs == 29 else rs
+        source_rt = temporary if rt == 29 else rt
+
+    lines.extend([
+        f"{'multu1' if name == 'msubu' else 'mult1'} {reg(source_rs)}, {reg(source_rt)}",
+        "mflo1 $26",
+        "mfhi1 $27",
+        "mflo $1",
+        "sltu $25, $1, $26",
+        "subu $1, $1, $26",
+        "mtlo $1",
+        "mfhi $1",
+        "subu $1, $1, $27",
+        "subu $1, $1, $25",
+        "mthi $1",
+        "lw $26, 20($sp)",
+        "mtlo1 $26",
+        "lw $26, 16($sp)",
+        "mthi1 $26",
+    ])
+
+    for index, register in enumerate(scratch):
+        lines.append(f"lw {reg(register)}, {index * 4}($sp)")
+
+    lines.append("addiu $sp, $sp, 32")
+    return lines
+
+
+def emit_float_round(name, destination, source, address):
+    scratch = (26, 27, 1, 25, 24)
+    done = f"lower_{address:08x}_round_done"
+    large = f"lower_{address:08x}_round_large"
+    adjust = f"lower_{address:08x}_round_adjust"
+    negative = f"lower_{address:08x}_round_negative"
+    lines = ["addiu $sp, $sp, -32"]
+
+    for index, register in enumerate(scratch):
+        lines.append(f"sw {reg(register)}, {index * 4}($sp)")
+
+    lines.extend([
+        f"mfc1 $26, {freg(source)}",
+        f"cvt.w.s {freg(destination)}, {freg(source)}",
+        f"mfc1 $1, {freg(destination)}",
+        "sll $27, $26, 1",
+        "srl $27, $27, 1",
+    ])
+
+    if name == "ceil.w.s":
+        lines.extend([
+            f"bltz $26, {done}",
+            "nop",
+            f"beq $27, $0, {done}",
+            "nop",
+            "lui $25, 0x3f80",
+            "sltu $24, $27, $25",
+            f"beq $24, $0, {large}",
+            "nop",
+            "addiu $1, $0, 1",
+            f"b {done}",
+            "nop",
+            f"{large}:",
+        ])
+    else:
+        lines.extend([
+            "lui $25, 0x3f00",
+            "sltu $24, $25, $27",
+            f"beq $24, $0, {done}",
+            "nop",
+            "lui $25, 0x3f80",
+            "sltu $24, $27, $25",
+            f"beq $24, $0, {large}",
+            "nop",
+            "addiu $1, $0, 1",
+            f"bgez $26, {done}",
+            "nop",
+            "addiu $1, $0, -1",
+            f"b {done}",
+            "nop",
+            f"{large}:",
+        ])
+
+    lines.extend([
+        "lui $25, 0x4b00",
+        "sltu $24, $27, $25",
+        f"beq $24, $0, {done}",
+        "nop",
+        "srl $24, $27, 23",
+        "andi $24, $24, 255",
+        "addiu $24, $24, -127",
+        "lui $25, 0x007f",
+        "ori $25, $25, 0xffff",
+        "srlv $25, $25, $24",
+        "and $24, $26, $25",
+    ])
+
+    if name == "ceil.w.s":
+        lines.extend([
+            f"beq $24, $0, {done}",
+            "nop",
+            "addiu $1, $1, 1",
+        ])
+    else:
+        lines.extend([
+            "srl $27, $25, 1",
+            "addiu $27, $27, 1",
+            "sltu $25, $27, $24",
+            f"bne $25, $0, {adjust}",
+            "nop",
+            f"bne $24, $27, {done}",
+            "nop",
+            "andi $25, $1, 1",
+            f"beq $25, $0, {done}",
+            "nop",
+            f"{adjust}:",
+            f"bltz $26, {negative}",
+            "nop",
+            "addiu $1, $1, 1",
+            f"b {done}",
+            "nop",
+            f"{negative}:",
+            "addiu $1, $1, -1",
+        ])
+
+    lines.extend([
+        f"{done}:",
+        f"mtc1 $1, {freg(destination)}",
+    ])
+
+    for index, register in enumerate(scratch):
+        lines.append(f"lw {reg(register)}, {index * 4}($sp)")
+
+    lines.append("addiu $sp, $sp, 32")
+    return lines
+
+
 def emit(instruction, label, address):
     name = instruction[0]
 
@@ -170,8 +327,10 @@ def emit(instruction, label, address):
 
     if name in ("mfhi", "mflo", "mthi", "mtlo"):
         return [f"{name} {reg(instruction[1])}"]
-    if name in ("mult", "multu", "madd"):
+    if name in ("mult", "multu", "madd", "maddu"):
         return [f"{name} {reg(instruction[1])}, {reg(instruction[2])}"]
+    if name in ("msub", "msubu"):
+        return emit_msub(instruction)
     if name in ("div", "divu"):
         return [f".word 0x{instruction[3]:08x}"]
 
@@ -223,6 +382,9 @@ def emit(instruction, label, address):
     if name in ("lwc1", "swc1"):
         _, ft, rs, offset = instruction
         return [f"{name} {freg(ft)}, {offset}({reg(rs)})"]
+
+    if name in ("round.w.s", "ceil.w.s"):
+        return emit_float_round(name, instruction[1], instruction[2], address)
 
     if name in ("mfc1", "mtc1", "cfc1", "ctc1"):
         _, rt, fs = instruction

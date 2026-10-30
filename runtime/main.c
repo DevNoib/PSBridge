@@ -5,6 +5,10 @@
 #include <sifrpc.h>
 #include <psbridge.h>
 #include <stdio.h>
+#include <stdint.h>
+
+extern unsigned char __psbridge_heap_start[];
+extern unsigned char __psbridge_heap_end[];
 
 u32 main_kernel_work[0x400] __attribute__((aligned(16)));
 
@@ -15,6 +19,7 @@ int main(void)
 
     printf("PSBridge levantou a frica\n");
     printf("memoria do jogo %u bytes\n", guest_info.memory_size);
+    printf("heap do jogo gozando %u bytes\n", (u32)((uintptr_t)__psbridge_heap_end - (uintptr_t)__psbridge_heap_start));
     printf("imports na fila do sus %u\n", psp_import_count);
 
     memset(

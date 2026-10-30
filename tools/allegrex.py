@@ -74,8 +74,11 @@ def decode(address, word):
         if funct == 0x16:
             return "clz", rd, rs
 
-        if funct in (24, 25, 26, 27, 28):
-            name = {24: "mult", 25: "multu", 26: "div", 27: "divu", 28: "madd"}[funct]
+        if funct in (24, 25, 26, 27, 28, 29, 46, 47):
+            name = {
+                24: "mult", 25: "multu", 26: "div", 27: "divu",
+                28: "madd", 29: "maddu", 46: "msub", 47: "msubu",
+            }[funct]
             return name, rs, rt, word
 
         if funct == 13:
@@ -146,8 +149,12 @@ def decode(address, word):
                     15: "floor.w.s",
                 }
                 return float_operations[funct], fd, fs
-            if funct == 0x0d:
-                return "trunc.w.s", fd, fs
+            if funct in (0x0c, 0x0d, 0x0e):
+                return {
+                    0x0c: "round.w.s",
+                    0x0d: "trunc.w.s",
+                    0x0e: "ceil.w.s",
+                }[funct], fd, fs
             if funct == 0x32:
                 return "c.eq.s", fs, rt
             if funct in (0x3c, 0x3d):
@@ -229,7 +236,7 @@ def format_instruction(instruction):
 
     if name in ("mfhi", "mflo", "mthi", "mtlo"):
         return f"{name} {reg(instruction[1])}"
-    if name in ("mult", "multu", "div", "divu", "madd"):
+    if name in ("mult", "multu", "div", "divu", "madd", "maddu", "msub", "msubu"):
         return f"{name} {reg(instruction[1])}, {reg(instruction[2])}"
 
     if name == "clz":
@@ -272,7 +279,7 @@ def format_instruction(instruction):
         return f"{name} {freg(fd)}, {freg(fs)}, {freg(ft)}"
     if name in (
         "mov.s", "trunc.w.s", "cvt.s.w", "sqrt.s",
-        "abs.s", "neg.s", "floor.w.s",
+        "abs.s", "neg.s", "floor.w.s", "round.w.s", "ceil.w.s",
     ):
         _, fd, fs = instruction
         return f"{name} {freg(fd)}, {freg(fs)}"

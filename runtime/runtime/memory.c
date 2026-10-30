@@ -4,7 +4,11 @@
 
 #include <psbridge.h>
 
-#define HEAP_SIZE 0x13e0000
+extern unsigned char __psbridge_heap_start[];
+extern unsigned char __psbridge_heap_end[];
+
+#define game_heap __psbridge_heap_start
+#define HEAP_SIZE ((u32)((uintptr_t)__psbridge_heap_end - (uintptr_t)__psbridge_heap_start))
 #define VIDEO_MEMORY_SIZE 0x180000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
@@ -32,7 +36,6 @@ typedef struct {
     u32 used_blocks;
 } FixedPool;
 
-static unsigned char game_heap[HEAP_SIZE] __attribute__((aligned(4096)));
 static unsigned char video_memory[VIDEO_MEMORY_SIZE] __attribute__((aligned(64)));
 static HeapAllocation heap_allocations[HEAP_ALLOCATION_LIMIT];
 static MemoryBlock blocks[BLOCK_LIMIT];
