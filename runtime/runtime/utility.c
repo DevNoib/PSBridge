@@ -286,11 +286,5 @@ int psbridge_utility(u32 nid, void *argument)
         return 0;
     }
 
-    PSB_LOG(
-    GE,
-    "utility botou o gogeta na chapa %08x ja perdeu no argumento %08lx\n",
-    (unsigned long)nid,
-    (unsigned long)(uintptr_t)argument);
-
     return 0;
 }
