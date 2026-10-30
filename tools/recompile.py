@@ -103,7 +103,7 @@ def read_embedded_elf(path, position):
     return data, elf_type, entry, segments
 
 
-def find_overlays(root, image_base, image_size, code_limit=0x12000):
+def find_overlays(root, image_base, image_size, code_limit=0x14000):
     asset_root = root / "build" / "PSP_GAME"
 
     if not asset_root.is_dir():
