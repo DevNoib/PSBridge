@@ -120,8 +120,13 @@ static u64 psbridge_video_skip(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, 
             return ring[0];
         }
         case 0xb240a59e: {
+            static u32 puts;
             u32 *ring = psbridge_game_pointer((void *)(uintptr_t)a0);
             int result;
+            u32 call = ++puts;
+            if (call <= 12 || (call & 127u) == 0)
+                PRINT_LOG("video mamando pacotes tentativa %u pediu %u disponivel %u callback %08x\n",
+                    call, a1, a2, ring ? ring[6] : 0);
             if (!ring || !ring[0] || ring[0] > 8192u || !ring[6])
                 return (u32)-1;
             if (a1 > ring[0])
@@ -131,6 +136,13 @@ static u64 psbridge_video_skip(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3, u32 a4, 
             if (!a1)
                 return 0;
             result = psbridge_call_callback((void *)(uintptr_t)ring[6], ring[5], a1, ring[7]);
+            if (call <= 12 || (call & 127u) == 0 || result < 0) {
+                PRINT_LOG("video callback gozou tentativa %u pacotes %d\n", call, result);
+            } else if (result == 0) {
+                static u32 secos;
+                if (++secos <= 12)
+                    PRINT_LOG("video secou os pacotes na tentativa %u\n", call);
+            }
             if (result < 0)
                 return result;
             if ((u32)result > a1)

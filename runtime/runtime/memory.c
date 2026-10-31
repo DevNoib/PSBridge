@@ -14,9 +14,9 @@ extern unsigned char __psbridge_heap_end[];
 #define VIDEO_MEMORY_SIZE 0x180000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
-#define HEAP_ALLOCATION_LIMIT 4096
+#define HEAP_ALLOCATION_LIMIT 8192
 #define VPL_LIMIT 16
-#define VPL_CHUNKS 2048
+#define VPL_CHUNKS 8192
 
 typedef struct {
     int used;
@@ -43,7 +43,7 @@ typedef struct {
 typedef struct {
     u8 *memory;
     u32 size;
-    int used;
+    int next;
 } VplChunk;
 
 typedef struct {
@@ -51,11 +51,38 @@ typedef struct {
     int uid;
     u32 size;
     u32 allocated;
-    VplChunk chunks[VPL_CHUNKS];
+    int first;
     int count;
 } VariablePool;
 
 static VariablePool variable_pools[VPL_LIMIT];
+static VplChunk vpl_chunks[VPL_CHUNKS];
+static int vpl_chunks_count;
+static int vpl_free_first = -1;
+
+static int take_vpl_slot(void)
+{
+    int slot;
+
+    if (vpl_free_first >= 0) {
+        slot = vpl_free_first;
+        vpl_free_first = vpl_chunks[slot].next;
+        return slot;
+    }
+
+    if (vpl_chunks_count >= VPL_CHUNKS)
+        return -1;
+
+    return vpl_chunks_count++;
+}
+
+static void return_vpl_slot(int slot)
+{
+    vpl_chunks[slot].memory = NULL;
+    vpl_chunks[slot].size = 0;
+    vpl_chunks[slot].next = vpl_free_first;
+    vpl_free_first = slot;
+}
 
 static unsigned char video_memory[VIDEO_MEMORY_SIZE] __attribute__((aligned(64)));
 static HeapAllocation heap_allocations[HEAP_ALLOCATION_LIMIT];
@@ -482,6 +509,7 @@ int psbridge_create_vpl(const char *name, int partition, u32 attributes, u32 siz
     variable_pools[index].used = 1;
     variable_pools[index].uid = 0x2000 + index;
     variable_pools[index].size = size;
+    variable_pools[index].first = -1;
     {
         static int logs;
         if (logs++ < 12)
@@ -498,46 +526,49 @@ int psbridge_allocate_vpl(int uid, u32 size, void *output, int try_only)
     u8 *memory;
     u32 *result = psbridge_game_pointer(output);
     (void)try_only;
+
     if (!result || !size || size > 0xfffffff0u)
         return -1;
 
     size = align_up(size + 8, 8);
+
     for (index = 0; index < VPL_LIMIT; index++) {
         VariablePool *pool = &variable_pools[index];
+        VplChunk *chunk;
+
         if (!pool->used || pool->uid != uid)
             continue;
 
-        if (size > pool->size - pool->allocated) {
+        if (pool->allocated > pool->size || size > pool->size - pool->allocated) {
             static int logs;
             if (logs++ < 12)
                 PRINT_LOG("vpl estourou limite uid %d pedido %u alocado %u teto %u\n", uid, size, pool->allocated, pool->size);
             return -1;
         }
 
-        for (slot = 0; slot < pool->count; slot++) {
-            if (!pool->chunks[slot].used)
-                break;
-        }
-        if (slot == VPL_CHUNKS) {
+        slot = take_vpl_slot();
+        if (slot < 0) {
             static int logs;
             if (logs++ < 12)
                 PRINT_LOG("vpl estourou tabela uid %d ativos %d limite %d\n", uid, pool->count, VPL_CHUNKS);
             return -1;
         }
-        if (slot == pool->count && pool->count < VPL_CHUNKS)
-            pool->count++;
 
         memory = heap_alloc(size, 64, 0);
         if (!memory) {
             static int logs;
+            return_vpl_slot(slot);
             if (logs++ < 12)
                 PRINT_LOG("vpl peidou alocacao uid %d tamanho %u heap %u\n", uid, size, HEAP_SIZE);
             return -1;
         }
 
-        pool->chunks[slot].used = 1;
-        pool->chunks[slot].memory = memory;
-        pool->chunks[slot].size = size;
+        chunk = &vpl_chunks[slot];
+        chunk->memory = memory;
+        chunk->size = size;
+        chunk->next = pool->first;
+        pool->first = slot;
+        pool->count++;
         pool->allocated += size;
         {
             static unsigned total;
@@ -563,25 +594,34 @@ int psbridge_allocate_vpl(int uid, u32 size, void *output, int try_only)
 int psbridge_free_vpl(int uid, void *address)
 {
     int index;
-    int slot;
     uintptr_t pointer = (uintptr_t)address;
 
     for (index = 0; index < VPL_LIMIT; index++) {
         VariablePool *pool = &variable_pools[index];
+        int *link;
+
         if (!pool->used || pool->uid != uid)
             continue;
-        for (slot = 0; slot < pool->count; slot++) {
-            VplChunk *chunk = &pool->chunks[slot];
-            if (!chunk->used || (uintptr_t)(chunk->memory + 8) != pointer)
-                continue;
-            if (heap_free(chunk->memory) < 0)
-                return -1;
-            pool->allocated -= chunk->size;
-            memset(chunk, 0, sizeof(*chunk));
-            while (pool->count && !pool->chunks[pool->count - 1].used)
+
+        link = &pool->first;
+        while (*link >= 0) {
+            int slot = *link;
+            VplChunk *chunk = &vpl_chunks[slot];
+
+            if ((uintptr_t)(chunk->memory + 8) == pointer) {
+                if (heap_free(chunk->memory) < 0)
+                    return -1;
+
+                *link = chunk->next;
+                pool->allocated -= chunk->size;
                 pool->count--;
-            return 0;
+                return_vpl_slot(slot);
+                return 0;
+            }
+
+            link = &chunk->next;
         }
+
         {
             static int logs;
             if (logs++ < 12)
@@ -595,16 +635,26 @@ int psbridge_free_vpl(int uid, void *address)
 int psbridge_delete_vpl(int uid)
 {
     int index;
-    int slot;
 
     for (index = 0; index < VPL_LIMIT; index++) {
         VariablePool *pool = &variable_pools[index];
+
         if (!pool->used || pool->uid != uid)
             continue;
-        for (slot = 0; slot < pool->count; slot++) {
-            if (pool->chunks[slot].used && heap_free(pool->chunks[slot].memory) < 0)
+
+        while (pool->first >= 0) {
+            int slot = pool->first;
+            VplChunk *chunk = &vpl_chunks[slot];
+
+            if (heap_free(chunk->memory) < 0)
                 return -1;
+
+            pool->first = chunk->next;
+            pool->allocated -= chunk->size;
+            pool->count--;
+            return_vpl_slot(slot);
         }
+
         memset(pool, 0, sizeof(*pool));
         return 0;
     }
