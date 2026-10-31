@@ -62,6 +62,24 @@ def emit_vfpu_dispatch(opcode, address):
     ]
 
 
+def refresh_guest_kernel_register():
+    registers = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 27, 28, 31)
+    lines = ["addiu $sp, $sp, -96"]
+    for index, register in enumerate(registers):
+        lines.append(f"sw {reg(register)}, {16 + index * 4}($sp)")
+    lines.extend([
+        "lui $gp, %hi(_gp)",
+        "addiu $gp, $gp, %lo(_gp)",
+        "jal psbridge_thread_kernel_work",
+        "nop",
+        "or $26, $2, $0",
+    ])
+    for index, register in enumerate(registers):
+        lines.append(f"lw {reg(register)}, {16 + index * 4}($sp)")
+    lines.append("addiu $sp, $sp, 96")
+    return lines
+
+
 def emit_msub(instruction):
     name, rs, rt, _ = instruction
     scratch = (26, 27, 1, 25)
@@ -125,7 +143,7 @@ def emit_float_round(name, destination, source, address):
 
     lines.extend([
         f"mfc1 $26, {freg(source)}",
-        f"cvt.w.s {freg(destination)}, {freg(source)}",
+        f"trunc.w.s {freg(destination)}, {freg(source)}",
         f"mfc1 $1, {freg(destination)}",
         "sll $27, $26, 1",
         "srl $27, $27, 1",
@@ -142,6 +160,21 @@ def emit_float_round(name, destination, source, address):
             f"beq $24, $0, {large}",
             "nop",
             "addiu $1, $0, 1",
+            f"b {done}",
+            "nop",
+            f"{large}:",
+        ])
+    elif name == "floor.w.s":
+        lines.extend([
+            f"bgez $26, {done}",
+            "nop",
+            f"beq $27, $0, {done}",
+            "nop",
+            "lui $25, 0x3f80",
+            "sltu $24, $27, $25",
+            f"beq $24, $0, {large}",
+            "nop",
+            "addiu $1, $0, -1",
             f"b {done}",
             "nop",
             f"{large}:",
@@ -179,11 +212,11 @@ def emit_float_round(name, destination, source, address):
         "and $24, $26, $25",
     ])
 
-    if name == "ceil.w.s":
+    if name in ("ceil.w.s", "floor.w.s"):
         lines.extend([
             f"beq $24, $0, {done}",
             "nop",
-            "addiu $1, $1, 1",
+            "addiu $1, $1, 1" if name == "ceil.w.s" else "addiu $1, $1, -1",
         ])
     else:
         lines.extend([
@@ -362,10 +395,12 @@ def emit(instruction, label, address):
 
     if name in two_reg_branches:
         _, rs, rt, target = instruction
-        return [f"{name} {reg(rs)}, {reg(rt)}, {label(target)}"]
+        setup = refresh_guest_kernel_register() if 26 in (rs, rt) else []
+        return setup + [f"{name} {reg(rs)}, {reg(rt)}, {label(target)}"]
     if name in one_reg_branches:
         _, rs, target = instruction
-        return [f"{name} {reg(rs)}, {label(target)}"]
+        setup = refresh_guest_kernel_register() if rs == 26 else []
+        return setup + [f"{name} {reg(rs)}, {label(target)}"]
     if name in float_branches:
         return [f"{name} {label(instruction[1])}"]
 
@@ -378,12 +413,13 @@ def emit(instruction, label, address):
 
     if name in ("lb", "lbu", "lh", "lhu", "lwl", "lwr", "lw", "sb", "sh", "swl", "swr", "sw"):
         _, rt, rs, offset = instruction
-        return [f"{name} {reg(rt)}, {offset}({reg(rs)})"]
+        setup = refresh_guest_kernel_register() if rs == 26 else []
+        return setup + [f"{name} {reg(rt)}, {offset}({reg(rs)})"]
     if name in ("lwc1", "swc1"):
         _, ft, rs, offset = instruction
         return [f"{name} {freg(ft)}, {offset}({reg(rs)})"]
 
-    if name in ("round.w.s", "ceil.w.s"):
+    if name in ("round.w.s", "ceil.w.s", "floor.w.s"):
         return emit_float_round(name, instruction[1], instruction[2], address)
 
     if name in ("mfc1", "mtc1", "cfc1", "ctc1"):
@@ -394,7 +430,7 @@ def emit(instruction, label, address):
         return [f"{name} {freg(fd)}, {freg(fs)}, {freg(ft)}"]
     if name in (
         "mov.s", "trunc.w.s", "cvt.s.w", "sqrt.s",
-        "abs.s", "neg.s", "floor.w.s",
+        "abs.s", "neg.s",
     ):
         _, fd, fs = instruction
         return [f"{name} {freg(fd)}, {freg(fs)}"]
@@ -511,16 +547,24 @@ def emit(instruction, label, address):
     if name == "ins":
         _, rt, rs, pos, size = instruction
 
-        if pos == 0 and size == 29:
-            return [
-                f"sll {reg(rt)}, {reg(rs)}, 3",
-                f"srl {reg(rt)}, {reg(rt)}, 3",
-            ]
+        if rt == 0:
+            return ["nop"]
 
         mask = ((1 << size) - 1) << pos if size < 32 else 0xffffffff
-        scratch = [item for item in (26, 27, 1, 25, 24, 23, 22, 21) if item not in (rs, rt)][:2]
-        first, second = scratch
-        lines = [f"mthi1 {reg(first)}", f"mtlo1 {reg(second)}"]
+        scratch = [item for item in (26, 27, 1, 25, 24, 23, 22, 21) if item not in (rs, rt)][:3]
+        first, second, original = scratch
+        lines = ["addiu $sp, $sp, -16"]
+        for index, register in enumerate(scratch):
+            lines.append(f"sw {reg(register)}, {index * 4}($sp)")
+
+        if rs == rt:
+            lines.append(f"or {reg(original)}, {reg(rs)}, $0")
+            source = original
+        elif rs == 29:
+            lines.append(f"addiu {reg(original)}, $sp, 16")
+            source = original
+        else:
+            source = rs
 
         lines.extend(load_value(first, mask))
         lines.extend([
@@ -529,17 +573,18 @@ def emit(instruction, label, address):
         ])
 
         if pos:
-            lines.append(f"sll {reg(second)}, {reg(rs)}, {pos}")
-        elif second != rs:
-            lines.append(f"or {reg(second)}, {reg(rs)}, $0")
+            lines.append(f"sll {reg(second)}, {reg(source)}, {pos}")
+        else:
+            lines.append(f"or {reg(second)}, {reg(source)}, $0")
 
         lines.extend([
             f"and {reg(second)}, {reg(second)}, {reg(first)}",
             f"or {reg(rt)}, {reg(rt)}, {reg(second)}",
-            f"mflo1 {reg(second)}",
-            f"mfhi1 {reg(first)}",
         ])
 
+        for index, register in enumerate(scratch):
+            lines.append(f"lw {reg(register)}, {index * 4}($sp)")
+        lines.append("addiu $sp, $sp, 16")
         return lines
 
     raise ValueError(f"não sei cuspir {name} no r5900")

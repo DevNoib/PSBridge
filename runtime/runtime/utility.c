@@ -90,7 +90,7 @@ static int osk_init(void *address)
     osk_params_address = (u32)(uintptr_t)address;
     osk_status = DIALOG_INIT;
 
-    printf("osk gozou inicio parametros %08lx campos %ld dados %08lx\n",
+    PRINT_LOG("osk gozou inicio parametros %08lx campos %ld dados %08lx\n",
         (unsigned long)osk_params_address,
         (long)params->field_count,
         (unsigned long)params->fields);
@@ -183,7 +183,8 @@ static int osk_shutdown(void)
     if (params)
         params->state = 5;
     osk_status = DIALOG_FINISHED;
-    printf("osk terminou de gozar e liberou pra nós\n");
+    PRINT_LOG("osk terminou de gozar e liberou pra nós\n");
+    return 0;
 }
 
 static int next_status(int *status)

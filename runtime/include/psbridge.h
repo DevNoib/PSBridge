@@ -46,6 +46,23 @@ int psbridge_create_fpl(const char *name, int partition, u32 attributes, u32 blo
 
 int psbridge_allocate_fpl(int uid, void **output);
 int psbridge_delete_fpl(int uid);
+int psbridge_create_vpl(const char *name, int partition, u32 attributes, u32 size, void *options);
+int psbridge_allocate_vpl(int uid, u32 size, void *output, int try_only);
+int psbridge_free_vpl(int uid, void *address);
+int psbridge_delete_vpl(int uid);
+int psbridge_create_semaphore(const char *name, u32 attributes, int initial, int maximum);
+int psbridge_delete_semaphore(int uid);
+int psbridge_signal_semaphore(int uid, int count);
+int psbridge_wait_semaphore(int uid, int count, void *timeout);
+int psbridge_wakeup_guest_thread(int uid);
+int psbridge_delete_guest_thread(int uid);
+int psbridge_create_mutex(const char *name, u32 attributes, int initial_count, void *options);
+int psbridge_refer_mutex_status(int uid, void *output);
+int psbridge_lock_mutex(int uid, int count, void *timeout, int try_only);
+int psbridge_unlock_mutex(int uid, int count);
+int psbridge_delete_mutex(int uid);
+int psbridge_change_thread_priority(int uid, int priority);
+void psbridge_exit_guest_thread(int status);
 
 int psbridge_create_thread(const char *name, void *entry, int priority, int stack_size, u32 attributes, void *options);
 
@@ -58,8 +75,18 @@ int psbridge_delete_lwmutex(void *workarea);
 int psbridge_lock_lwmutex(void *workarea, int count);
 int psbridge_unlock_lwmutex(void *workarea, int count);
 
+int psbridge_file_chdir(const char *path);
+int psbridge_file_dopen(const char *path);
+int psbridge_file_dread(int uid, void *output);
+int psbridge_file_dclose(int uid);
 int psbridge_file_open(const char *path, int flags, int mode);
 int psbridge_file_close(int descriptor);
+int psbridge_file_open_async(const char *path, int flags, int mode);
+int psbridge_file_async_wait(int descriptor, void *output, int polling);
+int psbridge_file_read_async(int descriptor, void *buffer, u32 size);
+int psbridge_file_write_async(int descriptor, const void *buffer, u32 size);
+int psbridge_file_close_async(int descriptor);
+
 int psbridge_file_read(int descriptor, void *buffer, u32 size);
 int psbridge_file_write(int descriptor, const void *buffer, u32 size);
 s64 psbridge_file_seek(int descriptor, u32 low, u32 high, int whence);

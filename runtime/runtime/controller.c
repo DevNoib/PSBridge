@@ -1,9 +1,11 @@
 #include <stdint.h>
 #include <string.h>
+#include <kernel.h>
 #include <libpad.h>
 #include <loadfile.h>
 
 #include "psbridge.h"
+#include "psbridge_log.h"
 
 typedef struct {
     u32 timestamp;
@@ -13,28 +15,74 @@ typedef struct {
     u8 reserved[6];
 } PspControllerData;
 
+#ifndef PSBRIDGE_HEADLESS
 static unsigned char pad_buffer[256] __attribute__((aligned(64)));
-static int controller_ready;
+static unsigned char controller_stack[8192] __attribute__((aligned(16)));
+static volatile int controller_state;
 
-static int start_controller(void)
+static void controller_setup_thread(void *arg)
 {
-    if (controller_ready)
-        return 0;
+    int sio;
+    int padman;
+    int ready;
+    (void)arg;
 
-    if (SifLoadModule("rom0:SIO2MAN", 0, NULL) < 0)
-        return -1;
+    sio = SifLoadModule("rom0:SIO2MAN", 0, NULL);
+    padman = SifLoadModule("rom0:PADMAN", 0, NULL);
+    PRINT_LOG("controle botando o pad pra trabalhar sio %d pad %d\n", sio, padman);
 
-    if (SifLoadModule("rom0:PADMAN", 0, NULL) < 0)
-        return -1;
+    ready = padInit(0);
+    if (ready > 0)
+        ready = padPortOpen(0, 0, pad_buffer);
 
-    if (!padInit(0))
-        return -1;
+    if (ready > 0) {
+        controller_state = 2;
+        PRINT_LOG("controle acordou e ta no grau\n");
+    } else {
+        controller_state = -1;
+        PRINT_LOG("controle broxou na inicializacao %d\n", ready);
+    }
 
-    if (!padPortOpen(0, 0, pad_buffer))
-        return -1;
+    ExitDeleteThread();
+}
 
-    controller_ready = 1;
-    return 0;
+static void start_controller(void)
+{
+    ee_thread_t config;
+    int interrupt_state;
+    int thread_id;
+    int start = 0;
+
+    interrupt_state = DIntr();
+    if (controller_state == 0) {
+        controller_state = 1;
+        start = 1;
+    }
+    if (interrupt_state != 0)
+        EIntr();
+
+    if (!start)
+        return;
+
+    memset(&config, 0, sizeof(config));
+    config.func = controller_setup_thread;
+    config.stack = controller_stack;
+    config.stack_size = sizeof(controller_stack);
+    config.gp_reg = &_gp;
+    config.initial_priority = 35;
+
+    thread_id = CreateThread(&config);
+    if (thread_id < 0) {
+        controller_state = -1;
+        PRINT_LOG("controle peidou criando thread %d\n", thread_id);
+        return;
+    }
+
+    if (StartThread(thread_id, NULL) < 0) {
+        DeleteThread(thread_id);
+        controller_state = -1;
+        PRINT_LOG("controle peidou abrindo thread\n");
+    }
 }
 
 static void read_controller(PspControllerData *sample)
@@ -43,12 +91,7 @@ static void read_controller(PspControllerData *sample)
     u32 pressed;
     int state;
 
-    memset(sample, 0, sizeof(*sample));
-    sample->lx = 128;
-    sample->ly = 128;
-
     state = padGetState(0, 0);
-
     if (state != PAD_STATE_STABLE && state != PAD_STATE_FINDCTP1)
         return;
 
@@ -67,8 +110,8 @@ static void read_controller(PspControllerData *sample)
 
     sample->lx = pad.ljoy_h;
     sample->ly = pad.ljoy_v;
-    
 }
+#endif
 
 int psbridge_controller_read(void *output, int count)
 {
@@ -76,17 +119,21 @@ int psbridge_controller_read(void *output, int count)
     PspControllerData current;
     int index;
 
-    if (start_controller() < 0)
-        return 0;
-
     if (!samples || count <= 0)
         return 0;
 
-    read_controller(&current);
+    memset(&current, 0, sizeof(current));
+    current.lx = 128;
+    current.ly = 128;
 
-    for (index = 0; index < count; index++) {
+#ifndef PSBRIDGE_HEADLESS
+    start_controller();
+    if (controller_state == 2)
+        read_controller(&current);
+#endif
+
+    for (index = 0; index < count; index++)
         samples[index] = current;
-    }
 
     return count;
 }

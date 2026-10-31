@@ -1,5 +1,6 @@
 #include <delaythread.h>
 #include <kernel.h>
+#include <malloc.h>
 #include <stdint.h>
 #include <string.h>
 #include <timer.h>
@@ -9,7 +10,8 @@
 
 #define THREAD_ARG_SIZE 256
 #define THREAD_LIMIT 8
-#define THREAD_STACK_SIZE 0x8000
+#define THREAD_STACK_MIN 0x8000
+#define THREAD_STACK_MAX 0x100000
 #define KERNEL_STACK_SIZE 0x1000
 #define MAILBOX_LIMIT 8
 #define MAILBOX_MESSAGES 32
@@ -23,6 +25,9 @@ typedef struct {
     void *arg;
     unsigned char arg_copy[THREAD_ARG_SIZE];
     void *kernel_work;
+    void *stack_buffer;
+    u32 stack_capacity;
+    u32 stack_size;
 } PspThread;
 
 typedef struct {
@@ -48,8 +53,6 @@ extern int psbridge_call_thread(
 static PspThread threads[THREAD_LIMIT];
 static PspMailbox mailboxes[MAILBOX_LIMIT];
 static int next_mailbox_uid = 0x3000;
-static unsigned char thread_stacks[THREAD_LIMIT][THREAD_STACK_SIZE]
-    __attribute__((aligned(16)));
 
 static PspThread *find_thread(int uid)
 {
@@ -78,11 +81,7 @@ static void run_thread(void *arg)
 {
     PspThread *thread = arg;
     u32 *kernel_work = thread->kernel_work;
-    u32 *initial_stack = (u32 *) (
-        (u8 *)thread->kernel_work -
-        THREAD_STACK_SIZE +
-        KERNEL_STACK_SIZE
-    );
+    u32 *initial_stack = (u32 *)thread->stack_buffer;
 
     memset(kernel_work, 0, KERNEL_STACK_SIZE);
 
@@ -107,16 +106,37 @@ static void run_thread(void *arg)
 int psbridge_create_thread(const char *name, void *entry, int priority, int stack_size, u32 attributes, void *options)
 {
     int index;
-    (void)stack_size;
     (void)attributes;
     (void)options;
 
     for (index = 0; index < THREAD_LIMIT; index++) {
         ee_thread_t config;
         int thread_id;
+        u32 needed;
+        void *stack;
 
         if (threads[index].used)
             continue;
+
+        if (stack_size <= 0)
+            stack_size = THREAD_STACK_MIN;
+
+        needed = ((u32)stack_size + 15) & ~15u;
+        if (needed < THREAD_STACK_MIN)
+            needed = THREAD_STACK_MIN;
+        if (needed > THREAD_STACK_MAX)
+            return -1;
+
+        if (threads[index].stack_capacity < needed + KERNEL_STACK_SIZE) {
+            stack = memalign(16, needed + KERNEL_STACK_SIZE);
+            if (!stack) {
+                PSB_LOG(THREAD, "pilha da thread peidou tamanho %u", needed);
+                return -1;
+            }
+            free(threads[index].stack_buffer);
+            threads[index].stack_buffer = stack;
+            threads[index].stack_capacity = needed + KERNEL_STACK_SIZE;
+        }
 
         if (priority < 2)
             priority = 2;
@@ -127,8 +147,8 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
         memset(&config, 0, sizeof(config));
 
         config.func = run_thread;
-        config.stack = thread_stacks[index];
-        config.stack_size = THREAD_STACK_SIZE - KERNEL_STACK_SIZE;
+        config.stack = threads[index].stack_buffer;
+        config.stack_size = needed;
         config.gp_reg = &_gp;
         config.initial_priority = priority;
 
@@ -141,10 +161,9 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
         threads[index].uid = 0x100 + index;
         threads[index].thread_id = thread_id;
         threads[index].entry = entry;
+        threads[index].stack_size = needed;
         threads[index].kernel_work =
-            thread_stacks[index] +
-            THREAD_STACK_SIZE -
-            KERNEL_STACK_SIZE;
+            (u8 *)threads[index].stack_buffer + needed;
 
         PSB_LOG(
             THREAD,
@@ -152,7 +171,7 @@ int psbridge_create_thread(const char *name, void *entry, int priority, int stac
             threads[index].uid,
             (u32)(uintptr_t)entry,
             stack_size,
-            THREAD_STACK_SIZE - KERNEL_STACK_SIZE
+            needed
         );
 
         return threads[index].uid;
@@ -472,4 +491,50 @@ int psbridge_delete_mailbox(int uid)
     memset(mailbox, 0, sizeof(*mailbox));
 
     return 0;
+}
+
+int psbridge_change_thread_priority(int uid, int priority)
+{
+    PspThread *thread = find_thread(uid);
+    if (priority < 2 || priority > 126)
+        return -1;
+    if (uid == 0)
+        return ChangeThreadPriority(GetThreadId(), priority);
+    if (!thread)
+        return -1;
+    return ChangeThreadPriority(thread->thread_id, priority);
+}
+
+void psbridge_exit_guest_thread(int status)
+{
+    int index;
+    int caller = GetThreadId();
+    (void)status;
+    for (index = 0; index < THREAD_LIMIT; index++) {
+        if (threads[index].used && threads[index].thread_id == caller) {
+            threads[index].used = 0;
+            break;
+        }
+    }
+    ExitDeleteThread();
+}
+
+int psbridge_wakeup_guest_thread(int uid)
+{
+    PspThread *thread = find_thread(uid);
+    if (!thread)
+        return -1;
+    return WakeupThread(thread->thread_id);
+}
+
+int psbridge_delete_guest_thread(int uid)
+{
+    PspThread *thread = find_thread(uid);
+    int result;
+    if (!thread)
+        return -1;
+    result = DeleteThread(thread->thread_id);
+    if (result >= 0)
+        memset(thread, 0, sizeof(*thread));
+    return result;
 }

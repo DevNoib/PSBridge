@@ -429,3 +429,135 @@ int psbridge_delay_thread(u32 delay, int use_callbacks)
         psbridge_check_callbacks();
     }
 }
+
+
+#define PSP_SEMA_LIMIT 32
+
+typedef struct {
+    int used;
+    int uid;
+    int semaphore;
+    int guard;
+    int count;
+    int maximum;
+} NativePspSema;
+
+static NativePspSema psp_semas[PSP_SEMA_LIMIT];
+
+static NativePspSema *find_psp_sema(int uid)
+{
+    int i;
+    for (i = 0; i < PSP_SEMA_LIMIT; i++) {
+        if (psp_semas[i].used && psp_semas[i].uid == uid)
+            return &psp_semas[i];
+    }
+    return NULL;
+}
+
+int psbridge_create_semaphore(const char *name, u32 attributes, int initial, int maximum)
+{
+    ee_sema_t cfg;
+    NativePspSema *sema;
+    int idx;
+    int native;
+    int guard;
+    (void)name;
+    (void)attributes;
+
+    if (maximum < 1 || initial < 0 || initial > maximum)
+        return -1;
+    for (idx = 0; idx < PSP_SEMA_LIMIT; idx++) {
+        if (!psp_semas[idx].used)
+            break;
+    }
+    if (idx == PSP_SEMA_LIMIT)
+        return -1;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.init_count = 0;
+    cfg.max_count = 1;
+    native = CreateSema(&cfg);
+    if (native < 0)
+        return native;
+    cfg.init_count = 1;
+    guard = CreateSema(&cfg);
+    if (guard < 0) {
+        DeleteSema(native);
+        return guard;
+    }
+    sema = &psp_semas[idx];
+    memset(sema, 0, sizeof(*sema));
+    sema->used = 1;
+    sema->uid = 0x6000 + idx;
+    sema->semaphore = native;
+    sema->guard = guard;
+    sema->count = initial;
+    sema->maximum = maximum;
+    return sema->uid;
+}
+
+int psbridge_delete_semaphore(int uid)
+{
+    NativePspSema *sema = find_psp_sema(uid);
+    if (!sema)
+        return -1;
+    sema->used = 0;
+    DeleteSema(sema->semaphore);
+    DeleteSema(sema->guard);
+    return 0;
+}
+
+int psbridge_signal_semaphore(int uid, int count)
+{
+    NativePspSema *sema = find_psp_sema(uid);
+    if (!sema || count <= 0)
+        return -1;
+    WaitSema(sema->guard);
+    if (count > sema->maximum - sema->count) {
+        SignalSema(sema->guard);
+        return -1;
+    }
+    sema->count += count;
+    SignalSema(sema->semaphore);
+    SignalSema(sema->guard);
+    return 0;
+}
+
+int psbridge_wait_semaphore(int uid, int count, void *timeout)
+{
+    NativePspSema *sema = find_psp_sema(uid);
+    u32 *remaining = timeout ? psbridge_game_pointer(timeout) : NULL;
+    u64 start = 0;
+    u64 duration = 0;
+    if (!sema || count <= 0 || count > sema->maximum || (timeout && !remaining))
+        return -1;
+    if (remaining) {
+        u32 seconds;
+        u32 micros;
+        TimerBusClock2USec(GetTimerSystemTime(), &seconds, &micros);
+        start = (u64)seconds * 1000000 + micros;
+        duration = *remaining;
+    }
+    for (;;) {
+        int available;
+        WaitSema(sema->guard);
+        available = sema->count >= count;
+        if (available)
+            sema->count -= count;
+        SignalSema(sema->guard);
+        if (available)
+            return 0;
+        if (remaining) {
+            u32 seconds;
+            u32 micros;
+            u64 now;
+            TimerBusClock2USec(GetTimerSystemTime(), &seconds, &micros);
+            now = (u64)seconds * 1000000 + micros;
+            if (now - start >= duration) {
+                *remaining = 0;
+                return -1;
+            }
+            DelayThread(1000);
+        } else if (WaitSema(sema->semaphore) < 0)
+            return -1;
+    }
+}

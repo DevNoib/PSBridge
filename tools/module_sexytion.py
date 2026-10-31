@@ -13,10 +13,11 @@ def add_image(lines, path, data, segments, pointers, label, image_base):
     lines.extend([
         '.section .guest_image,"aw",@progbits',
         ".balign 1048576",
-        f".space {image_base & 0xfffff}",
+        *([f".space {image_base & 0xfffff}"] if image_base & 0xfffff else []),
         ".globl guest_memory",
         ".globl guest_file_end",
         "guest_memory:",
+        ".align 0",
     ])
 
     for offset, target in sorted(pointers.items()):
@@ -41,7 +42,7 @@ def add_image(lines, path, data, segments, pointers, label, image_base):
         ".globl guest_bss",
         ".globl guest_memory_end",
         "guest_bss:",
-        f".space {len(data) - file_size}",
+        *([f".space {len(data) - file_size}"] if len(data) > file_size else []),
         "guest_memory_end:",
     ])
 

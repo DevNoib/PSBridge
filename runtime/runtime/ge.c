@@ -1,14 +1,30 @@
 #include <stdint.h>
 #include <string.h>
 #include <kernel.h>
+#include <math.h>
 
 #include "psbridge.h"
 #include "psbridge_log.h"
+#include "ge3d.h"
 
 #define GE_LIST_LIMIT 16
 #define GE_STACK_LIMIT 8
 #define GE_COMMAND_LIMIT 200000
 
+#define GE_WORLDMATRIXNUMBER 0x3a
+#define GE_WORLDMATRIXDATA 0x3b
+#define GE_VIEWMATRIXNUMBER 0x3c
+#define GE_VIEWMATRIXDATA 0x3d
+#define GE_PROJMATRIXNUMBER 0x3e
+#define GE_PROJMATRIXDATA 0x3f
+#define GE_VIEWPORTXSCALE 0x42
+#define GE_VIEWPORTYSCALE 0x43
+#define GE_VIEWPORTXCENTER 0x45
+#define GE_VIEWPORTYCENTER 0x46
+#define GE_TEXSCALEU 0x48
+#define GE_TEXSCALEV 0x49
+#define GE_TEXOFFSETU 0x4a
+#define GE_TEXOFFSETV 0x4b
 #define GE_VADDR 0x01
 #define GE_IADDR 0x02
 #define GE_PRIM 0x04
@@ -74,14 +90,6 @@ typedef struct {
 } GeState;
 
 typedef struct {
-    float x;
-    float y;
-    float u;
-    float v;
-    u32 color;
-} GeVertex;
-
-typedef struct {
     int weight;
     int texture;
     int color;
@@ -114,6 +122,7 @@ static int ge_clut_loaded;
 static int next_list_id = 1;
 static int next_callback_id = 1;
 
+
 static int align_value(int value, int alignment)
 {
     if (alignment <= 1)
@@ -137,7 +146,12 @@ static void *ge_pointer(u32 address)
     if (address >= video && address < video + 0x00200000)
         return (void *)(uintptr_t)address;
 
-    return psbridge_game_pointer((void *)(uintptr_t)address);
+    {
+        void *result = psbridge_game_pointer((void *)(uintptr_t)address);
+        if ((u32)(uintptr_t)result == address && address >= 0x00200000 && address < 0x02000000)
+            return (void *)(uintptr_t)(address | 0x80000000);
+        return result;
+    }
 }
 
 static u32 relative_address(u32 value)
@@ -401,6 +415,58 @@ static u32 texture_pixel(int x, int y)
     if (format == 7) {
         offset = pixel_offset(x, y, buffer_width * 4, 4, swizzled);
         return palette_color(*(const u32 *)(texture + offset));
+    }
+
+    if (format >= 8 && format <= 10) {
+        int bytes = format == 8 ? 8 : 16;
+        int blocks_w = (buffer_width + 3) >> 2;
+        const u8 *block = texture + ((y >> 2) * blocks_w + (x >> 2)) * bytes;
+        const u8 *colors = block;
+        u16 color0 = colors[4] | ((u16)colors[5] << 8);
+        u16 color1 = colors[6] | ((u16)colors[7] << 8);
+        u32 c0 = unpack_color(color0, 0);
+        u32 c1 = unpack_color(color1, 0);
+        u32 indices = (u32)colors[0] | ((u32)colors[1] << 8) | ((u32)colors[2] << 16) | ((u32)colors[3] << 24);
+        int pos = ((y & 3) << 2) | (x & 3);
+        int which = (indices >> (pos * 2)) & 3;
+        u32 rgb;
+        u32 a = 255;
+        if (which == 0)
+            rgb = c0;
+        else if (which == 1)
+            rgb = c1;
+        else if (which == 2)
+            rgb = (((c0 & 0xff) * 2 + (c1 & 0xff)) / 3) | (((((c0 >> 8) & 0xff) * 2 + ((c1 >> 8) & 0xff)) / 3) << 8) | (((((c0 >> 16) & 0xff) * 2 + ((c1 >> 16) & 0xff)) / 3) << 16);
+        else
+            rgb = (((c0 & 0xff) + (c1 & 0xff) * 2) / 3) | (((((c0 >> 8) & 0xff) + ((c1 >> 8) & 0xff) * 2) / 3) << 8) | (((((c0 >> 16) & 0xff) + ((c1 >> 16) & 0xff) * 2) / 3) << 16);
+        if (format == 8 && color0 <= color1) {
+            if (which == 2)
+                rgb = (((c0 & 0xff) + (c1 & 0xff)) >> 1) | (((((c0 >> 8) & 0xff) + ((c1 >> 8) & 0xff)) >> 1) << 8) | (((((c0 >> 16) & 0xff) + ((c1 >> 16) & 0xff)) >> 1) << 16);
+            if (which == 3)
+                a = 0;
+        } else if (format == 9) {
+            a = ((block[8 + (pos >> 1)] >> ((pos & 1) * 4)) & 15) * 17;
+        } else if (format == 10) {
+            u8 alphas[8];
+            u32 alpha_index = (u32)(block[8 + pos * 3 / 8] >> ((pos * 3) & 7));
+            if (((pos * 3) & 7) > 5)
+                alpha_index |= (u32)block[9 + pos * 3 / 8] << (8 - ((pos * 3) & 7));
+            alpha_index &= 7;
+            alphas[0] = block[14]; alphas[1] = block[15];
+            if (alphas[0] > alphas[1]) {
+                int i;
+                for (i = 2; i < 8; i++)
+                    alphas[i] = (u8)(((8 - i) * alphas[0] + (i - 1) * alphas[1]) / 7);
+            } else {
+                int i;
+                for (i = 2; i < 6; i++)
+                    alphas[i] = (u8)(((6 - i) * alphas[0] + (i - 1) * alphas[1]) / 5);
+                alphas[6] = 0;
+                alphas[7] = 255;
+            }
+            a = alphas[alpha_index];
+        }
+        return (rgb & 0xffffff) | (a << 24);
     }
 
     return 0;
@@ -767,14 +833,18 @@ static GeVertex read_vertex(int number, u32 type, VertexLayout layout)
     if (position == 1) {
         vertex.x = *(const s8 *)(data + layout.position);
         vertex.y = *(const s8 *)(data + layout.position + 1);
+        vertex.z = *(const s8 *)(data + layout.position + 2);
     } else if (position == 2) {
         vertex.x = *(const s16 *)(data + layout.position);
         vertex.y = *(const s16 *)(data + layout.position + 2);
+        vertex.z = *(const s16 *)(data + layout.position + 4);
     } else if (position == 3) {
         vertex.x = *(const float *)(data + layout.position);
         vertex.y = *(const float *)(data + layout.position + 4);
+        vertex.z = *(const float *)(data + layout.position + 8);
     }
 
+    ge3d_transform_vertex(&vertex, type, state.command);
     return vertex;
 }
 
@@ -1747,9 +1817,6 @@ static void draw_primitive(u32 argument)
         return;
 
     layout = vertex_layout(type);
-    if (!(type & (1 << 23)))
-        return;
-
     if (primitive == 6) {
         for (index = 0; index + 1 < count; index += 2)
             draw_sprite(
@@ -1860,6 +1927,8 @@ static void execute_list(GeList *list)
         argument = word & 0x00ffffff;
         list->pc += 4;
         state.command[command] = argument;
+        if (command >= GE_WORLDMATRIXNUMBER && command <= GE_PROJMATRIXDATA)
+            ge3d_matrix_command(command, argument);
 
         if (command == GE_TEXFUNC || command == GE_VERTEXTYPE || command == GE_TEXFORMAT) {
 

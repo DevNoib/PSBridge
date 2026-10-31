@@ -1,6 +1,8 @@
+#include "psbridge_log.h"
 #include <stdint.h>
 #include <kernel.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <psbridge.h>
 
@@ -12,7 +14,9 @@ extern unsigned char __psbridge_heap_end[];
 #define VIDEO_MEMORY_SIZE 0x180000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
-#define HEAP_ALLOCATION_LIMIT 96
+#define HEAP_ALLOCATION_LIMIT 4096
+#define VPL_LIMIT 16
+#define VPL_CHUNKS 2048
 
 typedef struct {
     int used;
@@ -35,6 +39,23 @@ typedef struct {
     u32 block_count;
     u32 used_blocks;
 } FixedPool;
+
+typedef struct {
+    u8 *memory;
+    u32 size;
+    int used;
+} VplChunk;
+
+typedef struct {
+    int used;
+    int uid;
+    u32 size;
+    u32 allocated;
+    VplChunk chunks[VPL_CHUNKS];
+    int count;
+} VariablePool;
+
+static VariablePool variable_pools[VPL_LIMIT];
 
 static unsigned char video_memory[VIDEO_MEMORY_SIZE] __attribute__((aligned(64)));
 static HeapAllocation heap_allocations[HEAP_ALLOCATION_LIMIT];
@@ -61,7 +82,7 @@ int psbridge_map_game_memory(void)
     u32 offset;
 
     virtual_start = guest_info.base & ~(pair_size - 1);
-    physical_start = (u32)(uintptr_t)guest_info.memory;
+    physical_start = (u32)(uintptr_t)guest_info.memory & 0x1fffffff;
     physical_start -= guest_info.base - virtual_start;
 
     if ((physical_start & (page_size - 1)) != 0)
@@ -79,6 +100,18 @@ int psbridge_map_game_memory(void)
             ((physical + page_size) >> 6) | flags
         );
 
+        if (result < 0)
+            return result;
+    }
+
+    for (offset = 0x00800000; offset < 0x02000000; offset += 0x00800000) {
+        int result = _SetTLBEntry(
+            39 + (offset - 0x00800000) / 0x00800000,
+            0x007fe000,
+            0x40000000 + offset,
+            (offset >> 6) | 0x17,
+            ((offset + 0x00400000) >> 6) | 0x17
+        );
         if (result < 0)
             return result;
     }
@@ -103,17 +136,7 @@ void *psbridge_game_pointer(const void *pointer)
     
 }
 
-static int heap_slot(void)
-{
-    int index;
-
-    for (index = 0; index < HEAP_ALLOCATION_LIMIT; index++) {
-        if (!heap_allocations[index].used)
-            return index;
-    }
-
-    return -1;
-}
+static u32 heap_count;
 
 static u32 align_up(u32 value, u32 alignment)
 {
@@ -125,89 +148,62 @@ static u32 align_down(u32 value, u32 alignment)
     return value & ~(alignment - 1);
 }
 
-static int heap_overlaps(u32 start, u32 size, u32 *boundary, int high)
+static void *heap_take(u32 start, u32 size, int index)
 {
-    int index;
-    u32 end = start + size;
+    if (heap_count >= HEAP_ALLOCATION_LIMIT)
+        return NULL;
 
-    for (index = 0; index < HEAP_ALLOCATION_LIMIT; index++) {
-        HeapAllocation *allocation = &heap_allocations[index];
-        u32 allocation_end;
-
-        if (!allocation->used)
-            continue;
-
-        allocation_end = allocation->start + allocation->size;
-
-        if (start >= allocation_end || end <= allocation->start)
-            continue;
-
-        *boundary = high ? allocation->start : allocation_end;
-        return 1;
-    }
-
-    return 0;
-}
-
-static void *heap_take(u32 start, u32 size, int slot)
-{
-    heap_allocations[slot].used = 1;
-    heap_allocations[slot].start = start;
-    heap_allocations[slot].size = size;
+    if (index < (int)heap_count)
+        memmove(&heap_allocations[index + 1], &heap_allocations[index],
+                (heap_count - index) * sizeof(heap_allocations[0]));
+    heap_allocations[index].used = 1;
+    heap_allocations[index].start = start;
+    heap_allocations[index].size = size;
+    heap_count++;
     return game_heap + start;
 }
 
 static void *heap_alloc(u32 size, u32 alignment, int high)
 {
+    u32 cursor;
     u32 position;
     u32 boundary;
-    int slot;
+    int index;
 
     if (alignment < 64)
         alignment = 64;
 
-    if ((alignment & (alignment - 1)) || !size || size > HEAP_SIZE)
-        return NULL;
-
-    if (size > HEAP_SIZE - 63)
+    if ((alignment & (alignment - 1)) || !size || alignment > HEAP_SIZE ||
+        size > HEAP_SIZE || size > HEAP_SIZE - 63 ||
+        heap_count >= HEAP_ALLOCATION_LIMIT)
         return NULL;
 
     size = align_up(size, 64);
-    slot = heap_slot();
-
-    if (slot < 0)
-        return NULL;
-
     if (!high) {
-        position = 0;
-
-        while (position <= HEAP_SIZE - size) {
-            position = align_up(position, alignment);
-
-            if (position > HEAP_SIZE - size)
-                break;
-
-            if (!heap_overlaps(position, size, &boundary, 0))
-                return heap_take(position, size, slot);
-
-            position = boundary;
+        cursor = 0;
+        for (index = 0; index <= (int)heap_count; index++) {
+            boundary = index == (int)heap_count ? HEAP_SIZE : heap_allocations[index].start;
+            position = align_up(cursor, alignment);
+            if (position <= boundary && size <= boundary - position)
+                return heap_take(position, size, index);
+            if (index < (int)heap_count)
+                cursor = heap_allocations[index].start + heap_allocations[index].size;
         }
-
         return NULL;
     }
 
-    position = align_down(HEAP_SIZE - size, alignment);
-
-    for (;;) {
-        if (!heap_overlaps(position, size, &boundary, 1))
-            return heap_take(position, size, slot);
-
-        if (boundary < size)
-            break;
-
-        position = align_down(boundary - size, alignment);
+    cursor = HEAP_SIZE;
+    for (index = (int)heap_count; index >= 0; index--) {
+        boundary = index == 0 ? 0 :
+            heap_allocations[index - 1].start + heap_allocations[index - 1].size;
+        if (cursor >= size) {
+            position = align_down(cursor - size, alignment);
+            if (position >= boundary)
+                return heap_take(position, size, index);
+        }
+        if (index > 0)
+            cursor = heap_allocations[index - 1].start;
     }
-
     return NULL;
 }
 
@@ -216,46 +212,65 @@ static void *heap_alloc_at(void *requested, u32 size)
     uintptr_t address = (uintptr_t)requested;
     uintptr_t base = (uintptr_t)game_heap;
     u32 start;
-    u32 boundary;
-    int slot;
+    int low;
+    int high;
+    int index;
 
-    if (address < base || address >= base + HEAP_SIZE || !size)
+    if (address < base || address >= base + HEAP_SIZE || !size ||
+        size > HEAP_SIZE - 63 || heap_count >= HEAP_ALLOCATION_LIMIT)
         return NULL;
 
     start = (u32)(address - base);
-
+    size = align_up(size, 64);
     if (size > HEAP_SIZE - start)
         return NULL;
 
-    size = align_up(size, 64);
-    slot = heap_slot();
-
-    if (slot < 0 || heap_overlaps(start, size, &boundary, 0))
+    low = 0;
+    high = (int)heap_count;
+    while (low < high) {
+        int middle = low + (high - low) / 2;
+        if (heap_allocations[middle].start < start)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    index = low;
+    if (index && heap_allocations[index - 1].start + heap_allocations[index - 1].size > start)
         return NULL;
-
-    return heap_take(start, size, slot);
+    if (index < (int)heap_count && start + size > heap_allocations[index].start)
+        return NULL;
+    return heap_take(start, size, index);
 }
 
 static int heap_free(void *pointer)
 {
     uintptr_t address = (uintptr_t)pointer;
     uintptr_t base = (uintptr_t)game_heap;
-    int index;
+    u32 start;
+    int low;
+    int high;
 
     if (address < base || address >= base + HEAP_SIZE)
         return -1;
 
-    for (index = 0; index < HEAP_ALLOCATION_LIMIT; index++) {
-        if (
-            heap_allocations[index].used &&
-            heap_allocations[index].start == (u32)(address - base)
-        ) {
-            memset(&heap_allocations[index], 0, sizeof(heap_allocations[index]));
-            return 0;
-        }
+    start = (u32)(address - base);
+    low = 0;
+    high = (int)heap_count;
+    while (low < high) {
+        int middle = low + (high - low) / 2;
+        if (heap_allocations[middle].start < start)
+            low = middle + 1;
+        else
+            high = middle;
     }
-
-    return -1;
+    if (low >= (int)heap_count || heap_allocations[low].start != start)
+        return -1;
+    if (low + 1 < (int)heap_count)
+        memmove(&heap_allocations[low], &heap_allocations[low + 1],
+                (heap_count - low - 1) * sizeof(heap_allocations[0]));
+    heap_count--;
+    memset(&heap_allocations[heap_count], 0, sizeof(heap_allocations[0]));
+    return 0;
 }
 
 int psbridge_volatile_lock(void *address, void *size)
@@ -317,8 +332,14 @@ int psbridge_alloc_partition(int partition, const char *name, int type, u32 size
         memory = heap_alloc(size, alignment, type == 1 || type == 4);
     }
 
-    if (!memory)
+    if (!memory) {
+        static int failures;
+        if (failures++ < 12)
+            PRINT_LOG("heap peidou alocacao particao %d tipo %d tamanho %lu alinhamento %lu livre %lu\n",
+                partition, type, (unsigned long)size, (unsigned long)alignment,
+                (unsigned long)HEAP_SIZE);
         return -1;
+    }
 
     blocks[index].used = 1;
     blocks[index].uid = 0x400 + index;
@@ -436,5 +457,156 @@ int psbridge_delete_fpl(int uid)
         }
     }
 
+    return -1;
+}
+
+int psbridge_create_vpl(const char *name, int partition, u32 attributes, u32 size, void *options)
+{
+    int index;
+    (void)name;
+    (void)partition;
+    (void)attributes;
+    (void)options;
+
+    if (!size || size > 0x02000000)
+        return -1;
+
+    for (index = 0; index < VPL_LIMIT; index++) {
+        if (!variable_pools[index].used)
+            break;
+    }
+    if (index == VPL_LIMIT)
+        return -1;
+
+    memset(&variable_pools[index], 0, sizeof(variable_pools[index]));
+    variable_pools[index].used = 1;
+    variable_pools[index].uid = 0x2000 + index;
+    variable_pools[index].size = size;
+    {
+        static int logs;
+        if (logs++ < 12)
+            PRINT_LOG("vpl nasceu na putaria uid %d tamanho %u memoria sob demanda\n",
+                variable_pools[index].uid, size);
+    }
+    return variable_pools[index].uid;
+}
+
+int psbridge_allocate_vpl(int uid, u32 size, void *output, int try_only)
+{
+    int index;
+    int slot;
+    u8 *memory;
+    u32 *result = psbridge_game_pointer(output);
+    (void)try_only;
+    if (!result || !size || size > 0xfffffff0u)
+        return -1;
+
+    size = align_up(size + 8, 8);
+    for (index = 0; index < VPL_LIMIT; index++) {
+        VariablePool *pool = &variable_pools[index];
+        if (!pool->used || pool->uid != uid)
+            continue;
+
+        if (size > pool->size - pool->allocated) {
+            static int logs;
+            if (logs++ < 12)
+                PRINT_LOG("vpl estourou limite uid %d pedido %u alocado %u teto %u\n", uid, size, pool->allocated, pool->size);
+            return -1;
+        }
+
+        for (slot = 0; slot < pool->count; slot++) {
+            if (!pool->chunks[slot].used)
+                break;
+        }
+        if (slot == VPL_CHUNKS) {
+            static int logs;
+            if (logs++ < 12)
+                PRINT_LOG("vpl estourou tabela uid %d ativos %d limite %d\n", uid, pool->count, VPL_CHUNKS);
+            return -1;
+        }
+        if (slot == pool->count && pool->count < VPL_CHUNKS)
+            pool->count++;
+
+        memory = heap_alloc(size, 64, 0);
+        if (!memory) {
+            static int logs;
+            if (logs++ < 12)
+                PRINT_LOG("vpl peidou alocacao uid %d tamanho %u heap %u\n", uid, size, HEAP_SIZE);
+            return -1;
+        }
+
+        pool->chunks[slot].used = 1;
+        pool->chunks[slot].memory = memory;
+        pool->chunks[slot].size = size;
+        pool->allocated += size;
+        {
+            static unsigned total;
+            if ((++total & 1023) == 0)
+                PRINT_LOG("vpl ta comendo memoria alocacoes %u uid %d ativos %d bytes %u\n", total, uid, pool->count, pool->allocated);
+        }
+        *result = (u32)(uintptr_t)(memory + 8);
+        {
+            static int logs;
+            if (logs++ < 12)
+                PRINT_LOG("vpl gozou uid %d tamanho %u endereco %08x\n", uid, size, *result);
+        }
+        return 0;
+    }
+    {
+        static int logs;
+        if (logs++ < 12)
+            PRINT_LOG("vpl sumiu uid %d tamanho %u saida %08x\n", uid, size, (u32)(uintptr_t)output);
+    }
+    return -1;
+}
+
+int psbridge_free_vpl(int uid, void *address)
+{
+    int index;
+    int slot;
+    uintptr_t pointer = (uintptr_t)address;
+
+    for (index = 0; index < VPL_LIMIT; index++) {
+        VariablePool *pool = &variable_pools[index];
+        if (!pool->used || pool->uid != uid)
+            continue;
+        for (slot = 0; slot < pool->count; slot++) {
+            VplChunk *chunk = &pool->chunks[slot];
+            if (!chunk->used || (uintptr_t)(chunk->memory + 8) != pointer)
+                continue;
+            if (heap_free(chunk->memory) < 0)
+                return -1;
+            pool->allocated -= chunk->size;
+            memset(chunk, 0, sizeof(*chunk));
+            while (pool->count && !pool->chunks[pool->count - 1].used)
+                pool->count--;
+            return 0;
+        }
+        {
+            static int logs;
+            if (logs++ < 12)
+                PRINT_LOG("vpl nao reconheceu liberacao uid %d endereco %08x ativos %d\n", uid, (u32)pointer, pool->count);
+        }
+        return -1;
+    }
+    return -1;
+}
+
+int psbridge_delete_vpl(int uid)
+{
+    int index;
+    int slot;
+
+    for (index = 0; index < VPL_LIMIT; index++) {
+        VariablePool *pool = &variable_pools[index];
+        if (!pool->used || pool->uid != uid)
+            continue;
+        for (slot = 0; slot < pool->count; slot++) {
+            if (pool->chunks[slot].used && heap_free(pool->chunks[slot].memory) < 0)
+                return -1;
+        }
+        memset(pool, 0, sizeof(*pool));
+        return 0;
+    }
     return -1;
 }

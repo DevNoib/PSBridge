@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <dirent.h>
 #include <delaythread.h>
 #include <kernel.h>
 #include <stdint.h>
@@ -9,6 +10,7 @@
 #include <timer.h>
 
 #include "psbridge.h"
+#include "psbridge_log.h"
 
 #define PATH_SIZE 512
 #define UMD_DESCRIPTOR 0x4000
@@ -39,6 +41,18 @@ static int umd_active = 1;
 static int umd_present = -1;
 static int umd_callback = -1;
 
+#define PSP_DIR_LIMIT 12
+#define PSP_DIR_BASE 0x5000
+
+typedef struct {
+    int used;
+    DIR *stream;
+    char path[PATH_SIZE];
+} PspDirHandle;
+
+static PspDirHandle directory_handles[PSP_DIR_LIMIT];
+static char current_psp_dir[PATH_SIZE] = "disc0:/";
+
 static UmdFile umd_files[UMD_FILES];
 static u32 next_umd_sector;
 static int umd_file_lock = -1;
@@ -61,16 +75,31 @@ typedef struct {
     PspDateTime modified;
     u32 private_data[6];
 } PspFileStat;
+typedef struct {
+    PspFileStat stat;
+    char name[256];
+    u32 private_data;
+    u32 dummy;
+} PspDirent;
 
 static int host_path(const char *path, char *output)
 {
     const char *game_path = psbridge_game_pointer(path);
     const char *prefix;
     const char *relative;
+    char resolved[PATH_SIZE];
     int length;
 
     if (!game_path)
         return -1;
+
+    if (strncmp(game_path, "disc0:/", 7) && strncmp(game_path, "ms0:/", 5) &&
+        strncmp(game_path, "disc0:", 6) && strncmp(game_path, "ms0:", 4)) {
+        length = snprintf(resolved, sizeof(resolved), "%s%s", current_psp_dir, game_path);
+        if (length < 0 || length >= (int)sizeof(resolved))
+            return -1;
+        game_path = resolved;
+    }
 
     if (!strncmp(game_path, "disc0:/sce_lbn", 14))
         return -1;
@@ -81,6 +110,12 @@ static int host_path(const char *path, char *output)
     } else if (!strncmp(game_path, "ms0:/", 5)) {
         prefix = "host:ms0/";
         relative = game_path + 5;
+    } else if (!strcmp(game_path, "disc0:")) {
+        prefix = "host:";
+        relative = "";
+    } else if (!strcmp(game_path, "ms0:")) {
+        prefix = "host:ms0/";
+        relative = "";
     } else {
         return -1;
     }
@@ -420,6 +455,112 @@ static int open_flags(int flags)
     return result;
 }
 
+int psbridge_file_chdir(const char *path)
+{
+    const char *guest = psbridge_game_pointer(path);
+    char translated[PATH_SIZE];
+    char resolved[PATH_SIZE];
+    struct stat info;
+    int count;
+    size_t length;
+
+    if (!guest || host_path(path, translated) < 0)
+        return -1;
+
+    if (strcmp(translated, "host:") && strcmp(translated, "host:ms0/") &&
+        (stat(translated, &info) < 0 || !S_ISDIR(info.st_mode)))
+        return -1;
+
+    if (strncmp(guest, "disc0:/", 7) && strncmp(guest, "ms0:/", 5))
+        count = snprintf(resolved, sizeof(resolved), "%s%s", current_psp_dir, guest);
+    else
+        count = snprintf(resolved, sizeof(resolved), "%s", guest);
+
+    if (count < 0 || count >= (int)sizeof(resolved))
+        return -1;
+
+    length = strlen(resolved);
+    if (!length)
+        return -1;
+    if (resolved[length - 1] != '/') {
+        if (length + 1 >= sizeof(resolved))
+            return -1;
+        resolved[length++] = '/';
+        resolved[length] = 0;
+    }
+    memcpy(current_psp_dir, resolved, length + 1);
+    return 0;
+}
+
+int psbridge_file_dopen(const char *path)
+{
+    char translated[PATH_SIZE];
+    DIR *dir;
+    int index;
+
+    if (host_path(path, translated) < 0)
+        return -1;
+    dir = opendir(translated);
+    if (!dir)
+        return -1;
+
+    for (index = 0; index < PSP_DIR_LIMIT; index++) {
+        if (!directory_handles[index].used) {
+            PspDirHandle *handle = &directory_handles[index];
+            memset(handle, 0, sizeof(*handle));
+            handle->used = 1;
+            handle->stream = dir;
+            snprintf(handle->path, sizeof(handle->path), "%s", translated);
+            return PSP_DIR_BASE + index;
+        }
+    }
+    closedir(dir);
+    return -1;
+}
+
+int psbridge_file_dread(int uid, void *output)
+{
+    int index = uid - PSP_DIR_BASE;
+    PspDirHandle *handle;
+    PspDirent *destination = psbridge_game_pointer(output);
+    struct dirent *entry;
+    char full_path[PATH_SIZE];
+    struct stat source;
+    int n;
+
+    if (index < 0 || index >= PSP_DIR_LIMIT || !directory_handles[index].used || !destination)
+        return -1;
+
+    handle = &directory_handles[index];
+    entry = readdir(handle->stream);
+    if (!entry)
+        return 0;
+
+    memset(destination, 0, sizeof(*destination));
+    snprintf(destination->name, sizeof(destination->name), "%s", entry->d_name);
+    n = snprintf(full_path, sizeof(full_path), "%s/%s", handle->path, entry->d_name);
+    if (n >= 0 && n < (int)sizeof(full_path) && stat(full_path, &source) >= 0) {
+        int is_directory = S_ISDIR(source.st_mode);
+        destination->stat.mode = is_directory ? 0x11ff : 0x21ff;
+        destination->stat.attributes = is_directory ? 0x10 : 0x20;
+        destination->stat.size = (u64)source.st_size;
+    }
+    return 1;
+}
+
+int psbridge_file_dclose(int uid)
+{
+    int index = uid - PSP_DIR_BASE;
+    PspDirHandle *handle;
+
+    if (index < 0 || index >= PSP_DIR_LIMIT || !directory_handles[index].used)
+        return -1;
+    handle = &directory_handles[index];
+    closedir(handle->stream);
+    memset(handle, 0, sizeof(*handle));
+    return 0;
+}
+
 int psbridge_file_open(const char *path, int flags, int mode)
 {
     char translated[PATH_SIZE];
@@ -477,6 +618,89 @@ int psbridge_file_open(const char *path, int flags, int mode)
         return -1;
 
     return open(translated, open_flags(flags), mode);
+}
+
+#define PSP_ASYNC_LIMIT 64
+
+typedef struct {
+    int used;
+    int descriptor;
+    s64 result;
+} PspAsyncHandle;
+
+static PspAsyncHandle async_handles[PSP_ASYNC_LIMIT];
+
+static int register_async_result(int descriptor, s64 result)
+{
+    int index;
+    int free_slot = -1;
+    for (index = 0; index < PSP_ASYNC_LIMIT; index++) {
+        if (async_handles[index].used && async_handles[index].descriptor == descriptor) {
+            async_handles[index].result = result;
+            return 0;
+        }
+        if (!async_handles[index].used && free_slot < 0)
+            free_slot = index;
+    }
+    if (free_slot < 0)
+        return -1;
+    async_handles[free_slot].used = 1;
+    async_handles[free_slot].descriptor = descriptor;
+    async_handles[free_slot].result = result;
+    return 0;
+}
+
+int psbridge_file_open_async(const char *path, int flags, int mode)
+{
+    int descriptor = psbridge_file_open(path, flags, mode);
+    if (descriptor < 0)
+        return descriptor;
+    if (register_async_result(descriptor, descriptor) < 0) {
+        psbridge_file_close(descriptor);
+        return -1;
+    }
+    return descriptor;
+}
+
+int psbridge_file_async_wait(int descriptor, void *output, int polling)
+{
+    s64 *result = psbridge_game_pointer(output);
+    int index;
+    if (!result)
+        return -1;
+    for (index = 0; index < PSP_ASYNC_LIMIT; index++) {
+        if (!async_handles[index].used || async_handles[index].descriptor != descriptor)
+            continue;
+        *result = async_handles[index].result;
+        if (!polling)
+            memset(&async_handles[index], 0, sizeof(async_handles[index]));
+        return 0;
+    }
+    return -1;
+}
+
+int psbridge_file_read_async(int descriptor, void *buffer, u32 size)
+{
+    int result = psbridge_file_read(descriptor, buffer, size);
+    if (result < 0)
+        return result;
+    return register_async_result(descriptor, result);
+}
+
+int psbridge_file_write_async(int descriptor, const void *buffer, u32 size)
+{
+    int result = psbridge_file_write(descriptor, buffer, size);
+    if (result < 0)
+        return result;
+    return register_async_result(descriptor, result);
+}
+
+int psbridge_file_close_async(int descriptor)
+{
+    int result = psbridge_file_close(descriptor);
+    if (result < 0)
+        return result;
+    return register_async_result(descriptor, result);
 }
 
 int psbridge_file_close(int descriptor)
@@ -569,6 +793,37 @@ int psbridge_file_write(int descriptor, const void *buffer, u32 size)
 
     if (!source && size)
         return -1;
+
+    if ((descriptor == 1 || descriptor == 2) && size >= 30 && size < 1024) {
+        char message[1024];
+        const char *found;
+        size_t length = size;
+        if (length >= sizeof(message))
+            length = sizeof(message) - 1;
+        memcpy(message, source, length);
+        message[length] = 0;
+        if (strstr(message, "DrawList")) {
+            PRINT_LOG("lista de desenho veio gozar na tela\n");
+            return size;
+        }
+        if (strstr(message, "CallbackFunction")) {
+            PRINT_LOG("umd chamou a callback pra putaria\n");
+            return size;
+        }
+        if (strstr(message, "SCE_UMD_READABLE")) {
+            PRINT_LOG("umd ta prontinha pra ser lida\n");
+            return size;
+        }
+        found = strstr(message, "couldn't find file ");
+        if (found) {
+            const char *name = found + sizeof("couldn't find file ") - 1;
+            const char *end = strchr(name, ' ');
+            int len = end ? (int)(end - name) : (int)strlen(name);
+            if (len > 0 && len < 256)
+                PRINT_LOG("cache deu uma broxada procurando %.*s, vou tentar abrir o arquivo direto\n", len, name);
+            return size;
+        }
+    }
 
     return write(descriptor, source, size);
 }

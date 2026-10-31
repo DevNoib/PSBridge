@@ -2,6 +2,7 @@
 #include "psbridge_log.h"
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 
 void psbridge_vfpu_dispatch(u32 op, u32 pc, u32 *gpr)
 {
@@ -35,8 +36,13 @@ void psbridge_vfpu_dispatch(u32 op, u32 pc, u32 *gpr)
         int offset = (int)(short)(op & 0xfffc);
         u32 addr = gpr[base] + offset;
         u32 *p = (u32 *)vfpu_checked_pointer(addr, n * 4);
-        if (!p)
+        if (!p) {
+            static u32 failed;
+            if (failed++ < 12)
+                PRINT_LOG("vfpu enderecou errado pc %08x op %08x reg %d valor %08x offset %d alvo %08x\n",
+                    pc, op, base, gpr[base], offset, addr);
             return;
+        }
         for (i = 0; i < n; i++)
         {
             int r = vfpu_vector_lane(reg, n, i);
