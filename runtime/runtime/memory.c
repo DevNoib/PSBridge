@@ -11,7 +11,7 @@ extern unsigned char __psbridge_heap_end[];
 
 #define game_heap __psbridge_heap_start
 #define HEAP_SIZE ((u32)((uintptr_t)__psbridge_heap_end - (uintptr_t)__psbridge_heap_start))
-#define VIDEO_MEMORY_SIZE 0x180000
+#define VIDEO_MEMORY_SIZE 0x200000
 #define BLOCK_LIMIT 64
 #define FPL_LIMIT 16
 #define HEAP_ALLOCATION_LIMIT 8192
@@ -56,6 +56,23 @@ typedef struct {
 } VariablePool;
 
 static VariablePool variable_pools[VPL_LIMIT];
+
+void psbridge_diag_vpl(void)
+{
+    int index;
+
+    for (index = 0; index < VPL_LIMIT; index++) {
+        const VariablePool *pool = &variable_pools[index];
+        if (!pool->used)
+            continue;
+
+        PRINT_LOG("vigia farejou vpl uid %d tamanho %u alocado %u livre %u lotes %d\n",
+            pool->uid, pool->size, pool->allocated,
+            pool->size >= pool->allocated ? pool->size - pool->allocated : 0,
+            pool->count);
+    }
+}
+
 static VplChunk vpl_chunks[VPL_CHUNKS];
 static int vpl_chunks_count;
 static int vpl_free_first = -1;

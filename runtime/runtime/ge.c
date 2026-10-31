@@ -32,6 +32,8 @@
 #define GE_CALL 0x0a
 #define GE_RET 0x0b
 #define GE_END 0x0c
+#define GE_SIGNAL 0x0e
+#define GE_FINISH 0x0f
 #define GE_BASE 0x10
 #define GE_VERTEXTYPE 0x12
 #define GE_OFFSETADDR 0x13
@@ -78,6 +80,12 @@ typedef struct {
     u32 stack[GE_STACK_LIMIT];
     u32 stack_offset[GE_STACK_LIMIT];
     int stack_size;
+    int callback_id;
+    u32 finish_id;
+    u32 signal_id;
+    int pending_signal;
+    int pending_finish;
+    unsigned draws;
 } GeList;
 
 typedef struct {
@@ -121,6 +129,121 @@ static u32 ge_clut_entries;
 static int ge_clut_loaded;
 static int next_list_id = 1;
 static int next_callback_id = 1;
+typedef struct {
+    int used;
+    int id;
+    u32 signal_function;
+    u32 signal_arg;
+    u32 finish_function;
+    u32 finish_arg;
+} GeCallback;
+
+static GeCallback ge_callbacks[16];
+static u32 diag_ge_callbacks;
+static u32 diag_ge_last_fb;
+static u32 diag_ge_last_texture;
+static u32 diag_ge_last_prim;
+static u32 diag_ge_last_format;
+static u32 diag_ge_trace_count;
+static volatile u32 ge_ready_buffer;
+static volatile u32 ge_ready_sequence;
+
+u32 psbridge_ge_ready_buffer(void)
+{
+    return ge_ready_buffer;
+}
+
+u32 psbridge_ge_ready_sequence(void)
+{
+    return ge_ready_sequence;
+}
+
+volatile int psbridge_diag_on __attribute__((weak));
+
+static GeCallback *find_ge_callback(int id)
+{
+    int i;
+    for (i = 0; i < 16; i++) {
+        if (ge_callbacks[i].used && ge_callbacks[i].id == id)
+            return &ge_callbacks[i];
+    }
+    return NULL;
+}
+
+static int register_ge_callback(u32 address)
+{
+    const u32 *data = psbridge_game_pointer((const void *)(uintptr_t)address);
+    int i;
+    if (!data)
+        return -1;
+    for (i = 0; i < 16; i++) {
+        if (!ge_callbacks[i].used) {
+            GeCallback *cb = &ge_callbacks[i];
+            cb->used = 1;
+            cb->id = next_callback_id++;
+            cb->signal_function = data[0];
+            cb->signal_arg = data[1];
+            cb->finish_function = data[2];
+            cb->finish_arg = data[3];
+            PRINT_LOG("ge cadastrou callback safada id %d sinal %08x fim %08x\n",
+                cb->id, cb->signal_function, cb->finish_function);
+            return cb->id;
+        }
+    }
+    return -1;
+}
+
+static void fire_ge_callback(int callback_id, int finish, u32 data)
+{
+    GeCallback *cb = find_ge_callback(callback_id);
+    u32 function;
+    u32 argument;
+    if (!cb)
+        return;
+    function = finish ? cb->finish_function : cb->signal_function;
+    argument = finish ? cb->finish_arg : cb->signal_arg;
+    if (!function)
+        return;
+    diag_ge_callbacks++;
+    if (diag_ge_callbacks <= 16 || (diag_ge_callbacks % 128 == 0))
+        PRINT_LOG("ge callback %s gozou id %d dado %08x endereco %08x vezes %u\n",
+            finish ? "fim" : "sinal", callback_id, data, function, diag_ge_callbacks);
+    psbridge_call_callback((void *)(uintptr_t)function, data, argument, 0);
+}
+static u32 diag_ge_lists;
+static u32 diag_ge_commands;
+static u32 diag_ge_prims;
+static u32 diag_ge_transfers;
+static u32 diag_ge_stalls;
+static u32 diag_ge_fails;
+static u32 diag_ge_last_pc;
+static u32 diag_ge_last_stall;
+static u32 diag_ge_last_word;
+
+void psbridge_diag_ge(void)
+{
+    int i;
+    int waiting = 0;
+    int finished = 0;
+
+    for (i = 0; i < GE_LIST_LIMIT; i++) {
+        if (!lists[i].used)
+            continue;
+        if (lists[i].done)
+            finished++;
+        else
+            waiting++;
+    }
+
+    PRINT_LOG("vigia farejou GE listas %u instrucoes %u primitivos %u copias %u engasgos %u falhas %u esperando %d finalizadas %d pc %08x stall %08x ultima %08x\n",
+        diag_ge_lists, diag_ge_commands, diag_ge_prims, diag_ge_transfers,
+        diag_ge_stalls, diag_ge_fails, waiting, finished,
+        diag_ge_last_pc, diag_ge_last_stall, diag_ge_last_word);
+    PRINT_LOG("vigia GE pintou alvo %08x textura %08x primitivo %08x formato %u callbacks %u\n",
+        diag_ge_last_fb, diag_ge_last_texture, diag_ge_last_prim,
+        diag_ge_last_format, diag_ge_callbacks);
+}
+
 
 
 static int align_value(int value, int alignment)
@@ -1676,7 +1799,9 @@ static void draw_triangle(GeVertex a, GeVertex b, GeVertex c)
     if (right < left || bottom < top)
         return;
 
-    fast_palette = textured && prepare_triangle_palette(&fast);
+    fast_palette = textured && a.color == 0xffffffffu &&
+        b.color == 0xffffffffu && c.color == 0xffffffffu &&
+        prepare_triangle_palette(&fast);
 
     inverse_area = 1.0f / area;
 
@@ -1923,6 +2048,8 @@ static void execute_list(GeList *list)
         }
 
         word = *instruction;
+        diag_ge_last_pc = list->pc - 4;
+        diag_ge_last_word = word;
         command = word >> 24;
         argument = word & 0x00ffffff;
         list->pc += 4;
@@ -1956,10 +2083,24 @@ static void execute_list(GeList *list)
             state.offset_address = argument << 8;
         else if (command == GE_ORIGIN)
             state.offset_address = list->pc - 4;
-        else if (command == GE_PRIM)
+        else if (command == GE_PRIM) {
+            list->draws++;
+            diag_ge_prims++;
+            diag_ge_last_prim = argument;
+            diag_ge_last_fb = buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH);
+            diag_ge_last_texture = buffer_address(GE_TEXADDR0, GE_TEXBUFWIDTH0);
+            diag_ge_last_format = state.command[GE_FRAMEBUF_FORMAT] & 3;
+            if (psbridge_diag_on && diag_ge_trace_count < 64) {
+                diag_ge_trace_count++;
+                PRINT_LOG("ge vai pintar a frica alvo %08x textura %08x tipo %08x formato %u comando %08x\n",
+                    diag_ge_last_fb, diag_ge_last_texture, argument,
+                    diag_ge_last_format, diag_ge_last_pc);
+            }
             draw_primitive(argument);
-        else if (command == GE_TRANSFERSTART)
+        } else if (command == GE_TRANSFERSTART) {
+            diag_ge_transfers++;
             transfer_pixels();
+        }
         else if (command == GE_LOADCLUT)
             load_clut(argument);
         else if (command == GE_JUMP)
@@ -1973,16 +2114,45 @@ static void execute_list(GeList *list)
             list->stack_size--;
             list->pc = list->stack[list->stack_size];
             state.offset_address = list->stack_offset[list->stack_size];
+        } else if (command == GE_SIGNAL) {
+            list->signal_id = argument & 0xffff;
+            list->pending_signal = 1;
+        } else if (command == GE_FINISH) {
+            list->finish_id = argument;
+            list->pending_finish = 1;
         } else if (command == GE_END) {
             list->done = 1;
+            if (list->draws) {
+                u32 target = buffer_address(GE_VADDR_BASE, GE_VADDR_WIDTH);
+                if (target <= 0x200000u - 0x88000u && (state.command[GE_FRAMEBUF_FORMAT] & 3u) == 3u) {
+                    ge_ready_buffer = target;
+                    ge_ready_sequence++;
+                }
+            }
+            if (list->pending_signal) {
+                u32 signal = list->signal_id;
+                list->pending_signal = 0;
+                fire_ge_callback(list->callback_id, 0, signal);
+            }
+            if (list->pending_finish) {
+                u32 finish = list->finish_id;
+                list->pending_finish = 0;
+                fire_ge_callback(list->callback_id, 1, finish);
+            }
         }
     }
 
-    if (commands >= GE_COMMAND_LIMIT)
+    diag_ge_commands += commands;
+    diag_ge_last_stall = list->stall;
+    if (list->stall && list->pc == list->stall && !list->done)
+        diag_ge_stalls++;
+    if (commands >= GE_COMMAND_LIMIT) {
+        diag_ge_fails++;
         list->done = 1;
+    }
 }
 
-static int enqueue_list(u32 address, u32 stall)
+static int enqueue_list(u32 address, u32 stall, int callback_id)
 {
     GeList *list = NULL;
     int index;
@@ -2000,14 +2170,18 @@ static int enqueue_list(u32 address, u32 stall)
         }
     }
 
-    if (!list)
+    if (!list) {
+        diag_ge_fails++;
         return -1;
+    }
 
+    diag_ge_lists++;
     memset(list, 0, sizeof(*list));
     list->used = 1;
     list->id = next_list_id++;
     list->pc = address;
     list->stall = stall;
+    list->callback_id = callback_id;
     execute_list(list);
     return list->id;
 }
@@ -2020,14 +2194,26 @@ u64 psbridge_ge(u32 nid, u32 a0, u32 a1, u32 a2, u32 a3)
     if (nid == 0xe47e40e4)
         return (u32)(uintptr_t)psbridge_video_memory();
 
-    if (nid == 0xa4fc06a4)
-        return next_callback_id++;
+    if (nid == 0x1f6752ad) {
+        static unsigned vramsinha;
+        if (vramsinha++ < 4)
+            PRINT_LOG("ge contou a vramsinha %u bytes\n", 0x200000u);
+        return 0x200000u;
+    }
 
-    if (nid == 0x05db22ce)
+    if (nid == 0xa4fc06a4)
+        return (u32)register_ge_callback(a0);
+
+    if (nid == 0x05db22ce) {
+        GeCallback *cb = find_ge_callback((int)a0);
+        if (!cb)
+            return (u32)-1;
+        memset(cb, 0, sizeof(*cb));
         return 0;
+    }
 
     if (nid == 0xab49e76a || nid == 0x1c0d95a6)
-        return enqueue_list(a0, a1);
+        return enqueue_list(a0, a1, (int)a2);
 
     if (nid == 0xe0d68148) {
         list = find_list((int)a0);
